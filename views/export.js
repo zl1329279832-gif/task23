@@ -20,6 +20,7 @@ const ExportView = (() => {
             <div>问卷模板</div><div style="text-align:right;font-weight:600">${stats.questionnaire_templates || 0}</div>
             <div>待同步</div><div style="text-align:right;font-weight:600">${stats.sync_queue || 0}</div>
             <div>冲突记录</div><div style="text-align:right;font-weight:600">${stats.sync_conflicts || 0}</div>
+            <div>随访计划</div><div style="text-align:right;font-weight:600">${stats.followup_plans || 0}</div>
           </div>
         </div>
 
@@ -53,6 +54,16 @@ const ExportView = (() => {
           <div class="info">
             <div class="title">仅导出未同步记录</div>
             <div class="desc">${stats.sync_queue || 0} 条待同步数据</div>
+          </div>
+        </div>
+
+        <div class="export-option" id="btn-export-audit">
+          <div class="icon" style="background:#e8eaf6">
+            <svg width="24" height="24" viewBox="0 0 24 24"><path fill="#3f51b5" d="M19 3h-4.18C14.4 1.84 13.3 1 12 1c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm2 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+          </div>
+          <div class="info">
+            <div class="title">导出审计包</div>
+            <div class="desc">含计划、随访、问卷、附件状态、冲突记录</div>
           </div>
         </div>
 
@@ -193,6 +204,91 @@ const ExportView = (() => {
       Utils.showToast('导出成功', 'success');
     });
 
+    // Export audit package
+    document.getElementById('btn-export-audit').addEventListener('click', async () => {
+      try {
+        const patients = await DB.loadAllPatients();
+        const db = await DB.open();
+        const visits = await DB.getAll(db, 'visits');
+        const plans = await DB.loadAllPlans();
+        const conflicts = await DB.getAll(db, 'sync_conflicts');
+        const attachmentQueue = await DB.getAttachmentQueue();
+        const templates = await DB.getAllTemplates();
+        const syncQueue = await DB.getSyncQueue();
+
+        // Remove sensitive encrypted fields
+        const sanitizedPatients = patients.map(p => {
+          const copy = { ...p };
+          delete copy._encrypted_idCard;
+          delete copy._hmac;
+          delete copy._baseSnapshot;
+          return copy;
+        });
+
+        const auditPack = {
+          exportDate: Utils.now(),
+          version: '2.0',
+          type: 'audit_package',
+          summary: {
+            patientCount: patients.length,
+            visitCount: visits.length,
+            planCount: plans.length,
+            conflictCount: conflicts.length,
+            pendingSync: syncQueue.length,
+            pendingAttachments: attachmentQueue.length,
+            planStats: {
+              pending: plans.filter(p => p.status === 'pending').length,
+              overdue: plans.filter(p => p.status === 'overdue').length,
+              completed: plans.filter(p => p.status === 'completed').length,
+              cancelled: plans.filter(p => p.status === 'cancelled').length
+            }
+          },
+          patients: sanitizedPatients,
+          visits: visits.map(v => {
+            const copy = { ...v };
+            delete copy._hmac;
+            delete copy._baseSnapshot;
+            // Strip attachment data (keep metadata only)
+            if (copy.attachments) {
+              copy.attachments = copy.attachments.map(a => ({
+                id: a.id, name: a.name, compressionState: a.compressionState,
+                uploadStatus: a.uploadStatus, compressedSize: a.compressedSize,
+                createdAt: a.createdAt
+              }));
+            }
+            return copy;
+          }),
+          followupPlans: plans,
+          questionnareTemplates: templates,
+          conflicts: conflicts.map(c => ({
+            id: c.id, entityType: c.entityType, entityId: c.entityId,
+            resolved: c.resolved, choice: c.choice,
+            conflictFields: c.mergeResult ? c.mergeResult.conflicts.map(f => f.field) : [],
+            createdAt: c.createdAt, resolvedAt: c.resolvedAt
+          })),
+          attachmentQueue: attachmentQueue.map(a => ({
+            id: a.id, visitId: a.visitId, name: a.name,
+            status: a.status, retryCount: a.retryCount,
+            lastError: a.lastError, createdAt: a.createdAt
+          })),
+          syncQueue: syncQueue.map(q => ({
+            id: q.id, entityType: q.entityType, entityId: q.entityId,
+            action: q.action, retryCount: q.retryCount,
+            lastError: q.lastError, createdAt: q.createdAt
+          }))
+        };
+
+        Utils.downloadFile(
+          JSON.stringify(auditPack, null, 2),
+          `审计包_${Utils.today()}.json`,
+          'application/json'
+        );
+        Utils.showToast('审计包导出成功', 'success');
+      } catch (err) {
+        Utils.showToast('导出失败: ' + err.message, 'error');
+      }
+    });
+
     // Clear synced data
     document.getElementById('btn-clear-synced').addEventListener('click', async () => {
       const confirm = await Utils.showModal(
@@ -279,7 +375,7 @@ const ExportView = (() => {
       if (!confirm2) return;
 
       const db = await DB.open();
-      for (const store of ['patients', 'visits', 'sync_queue', 'sync_conflicts', 'settings']) {
+      for (const store of ['patients', 'visits', 'sync_queue', 'sync_conflicts', 'followup_plans', 'settings']) {
         await DB.clear(db, store);
       }
       Utils.showToast('所有数据已清空', 'success');

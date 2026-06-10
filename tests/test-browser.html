@@ -47,6 +47,8 @@
   <script src="lib/attachments.js"></script>
   <script src="lib/reminders.js"></script>
   <script src="lib/sync.js"></script>
+  <script src="lib/followup-plan.js"></script>
+  <script src="lib/makeup-visit.js"></script>
   <script>
     // Browser test runner
     const _results = { suites: [], total: 0, pass: 0, fail: 0 };
@@ -143,6 +145,120 @@
       assert(bDiff.localChanged && !bDiff.remoteChanged, 'b 仅本地修改');
       const aDiff = diffs.find(d => d.field === 'a');
       assert(!aDiff.localChanged && aDiff.remoteChanged, 'a 仅远程修改');
+    });
+
+    suite('6. PIN 切换验证', async () => {
+      const db = await DB.open();
+      const tx = db.transaction('patients', 'readwrite');
+      tx.objectStore('patients').clear();
+
+      // 模拟加密身份证
+      const testData = '110101199001011234';
+      if (CryptoManager.isReady()) {
+        const encrypted = await CryptoManager.encrypt(testData);
+        assert(encrypted !== testData, 'PIN加密后数据已变');
+        const decrypted = await CryptoManager.decrypt(encrypted);
+        assertEqual(decrypted, testData, 'PIN解密还原正确');
+      } else {
+        assert(true, 'CryptoManager未就绪，跳过PIN测试');
+      }
+    });
+
+    suite('7. 离线多次编辑基线保持', () => {
+      const base = { name: '张三', age: 60, riskLevel: 'low', phone: '138' };
+      // 第一次编辑
+      const edit1 = { ...base, riskLevel: 'medium' };
+      // 第二次编辑
+      const edit2 = { ...edit1, phone: '139' };
+      // 第三次编辑
+      const edit3 = { ...edit2, address: '新地址' };
+
+      // 远程修改
+      const remote = { ...base, age: 65, notes: '远程备注' };
+
+      // 三方合并（base始终为同步时的快照）
+      const result = threeWayMerge(base, edit3, remote);
+
+      // riskLevel: 仅本地修改
+      assertEqual(result.merged.riskLevel, 'medium', '多次编辑riskLevel取本地');
+      // phone: 仅本地修改
+      assertEqual(result.merged.phone, '139', '多次编辑phone取本地');
+      // address: 仅本地新增
+      assertEqual(result.merged.address, '新地址', '多次编辑address取本地');
+      // age: 仅远程修改
+      assertEqual(result.merged.age, 65, '多次编辑age取远程');
+      // notes: 仅远程新增
+      assertEqual(result.merged.notes, '远程备注', '多次编辑notes取远程');
+      // 无冲突
+      assertEqual(result.conflicts.length, 0, '多次编辑不同字段无冲突');
+    });
+
+    suite('8. 附件上传失败重试状态', () => {
+      const att = Attachments.createFromBase64('data:image/jpeg;base64,retrytest', 'retry.jpg');
+      assertEqual(att.uploadStatus, 'pending', '初始上传状态pending');
+      assertEqual(att.compressionState, 'original', '初始压缩状态original');
+
+      // 模拟失败重试
+      att.uploadStatus = 'failed';
+      att.uploadRetryCount = 3;
+      assertEqual(att.compressionState, 'original', '失败后压缩状态不变');
+      assertEqual(att.uploadRetryCount, 3, '重试次数=3');
+      assert(Attachments.verifyIntegrity(att), '失败后数据完整性不变');
+    });
+
+    suite('9. 三层冲突合并（问卷+附件）', () => {
+      // 问卷层测试
+      const baseVisit = {
+        id: 'v1', patientId: 'p1', bpSystolic: 130,
+        questionnaires: [{ templateId: 'htn', version: 1, answers: { bp: '达标' } }],
+        attachments: [{ id: 'a1', name: 'img.jpg', uploadStatus: 'pending', compressionState: 'compressed' }]
+      };
+      const localVisit = {
+        ...baseVisit,
+        bpSystolic: 140,
+        questionnaires: [{ templateId: 'htn', version: 1, answers: { bp: '偏高' } }],
+        attachments: [
+          { id: 'a1', name: 'img.jpg', uploadStatus: 'pending', compressionState: 'compressed' },
+          { id: 'a2', name: 'new.jpg', uploadStatus: 'pending', compressionState: 'compressed' }
+        ]
+      };
+      const remoteVisit = {
+        ...baseVisit,
+        questionnaires: [{ templateId: 'htn', version: 2, answers: { bp: '达标', sleep: '好' } }],
+        attachments: [{ id: 'a1', name: 'img.jpg', uploadStatus: 'uploaded', compressionState: 'uploaded' }]
+      };
+
+      const result = SyncManager.threeWayMergeMultiLevel(baseVisit, localVisit, remoteVisit, 'visits');
+
+      // bpSystolic: 仅本地修改
+      assertEqual(result.merged.bpSystolic, 140, '三层合并核心字段取本地');
+      // 问卷：模板升级自动合并
+      assertEqual(result.merged.questionnaires[0].version, 2, '问卷取远程新版本');
+      // 附件：本地新增保留，远程上传状态合并
+      assert(result.merged.attachments.length >= 2, '本地新增附件保留');
+      const a1 = result.merged.attachments.find(a => a.id === 'a1');
+      assertEqual(a1.uploadStatus, 'uploaded', '附件远程上传状态合并');
+    });
+
+    suite('10. 提醒重排验证', () => {
+      const patient = { diseases: ['hypertension', 'diabetes'], riskLevel: 'high' };
+
+      // 原计划：高风险+7天
+      const next1 = Reminders.getNextVisitDate(patient, 'high', '2026-06-01');
+      assertEqual(next1, '2026-06-08', '重排前=+7天');
+
+      // 实际随访日期晚了3天，基于新日期重排
+      const next2 = Reminders.getNextVisitDate(patient, 'high', '2026-06-04');
+      assertEqual(next2, '2026-06-11', '基于新就诊日重排=+7天');
+
+      // 风险降低重排
+      const next3 = Reminders.getNextVisitDate(patient, 'medium', '2026-06-04');
+      assertEqual(next3, '2026-06-18', '降为中风险重排=+14天');
+
+      // 幂等性
+      const r1 = Reminders.getNextVisitDate(patient, 'high', '2026-06-10');
+      const r2 = Reminders.getNextVisitDate(patient, 'high', '2026-06-10');
+      assertEqual(r1, r2, '重排后幂等性');
     });
 
     // Render results

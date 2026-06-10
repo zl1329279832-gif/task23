@@ -13,7 +13,9 @@ const App = (() => {
     'sync-review': SyncReviewView,
     'conflict': ConflictView,
     'export': ExportView,
-    'questionnaire-config': QuestionnaireConfigView
+    'questionnaire-config': QuestionnaireConfigView,
+    'followup-plan': FollowupPlanView,
+    'risk-config': RiskConfigView
   };
 
   // --- 初始化 ---
@@ -253,6 +255,9 @@ const App = (() => {
     } catch { /* offline - templates already in cache/db */ }
 
     await QuestionnaireEngine.loadTemplates();
+
+    // Load saved stratification rules
+    await FollowupPlan.loadSavedRules();
 
     // Start sync
     SyncManager.startAutoSync();

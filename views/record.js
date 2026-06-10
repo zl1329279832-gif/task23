@@ -284,6 +284,47 @@ const RecordView = (() => {
         _patient.lastVisitDate = _visit.date;
         await DB.savePatient(_patient);
 
+        // Evaluate makeup visit triggers
+        const activePlans = (await DB.loadPlansByPatient(_patient.id))
+          .filter(p => p.status === 'pending')
+          .sort((a, b) => new Date(a.plannedDate) - new Date(b.plannedDate));
+        const activePlan = activePlans[0] || null;
+
+        const evalResult = await MakeupVisit.evaluateVisit(_patient, _visit, activePlan);
+
+        // Show triggered actions to the nurse
+        if (evalResult.actions.length > 0) {
+          const actionHtml = evalResult.actions.map(a => {
+            const icons = {
+              makeup_questionnaire: '<span style="color:#fb8c00">&#9888;</span>',
+              review_reminder: '<span style="color:#7b1fa2">&#128197;</span>',
+              abnormal_report: '<span style="color:#e53935">&#9888;</span>',
+              require_attachment: '<span style="color:#e65100">&#128247;</span>'
+            };
+            const labels = {
+              makeup_questionnaire: '需补访问卷',
+              review_reminder: '建议复诊',
+              abnormal_report: '异常指标上报',
+              require_attachment: '需补充附件'
+            };
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border-light)">
+              <div style="font-weight:500">${icons[a.type] || ''} ${labels[a.type] || a.type}</div>
+              <div style="font-size:12px;color:var(--text-secondary)">${Utils.escapeHTML(a.reason)}</div>
+            </div>`;
+          }).join('');
+
+          await Utils.showModal('随访评估结果', `
+            <div style="margin-bottom:8px;font-size:13px">系统检测到以下需处理事项：</div>
+            ${actionHtml}
+            ${evalResult.nextPlan ? `<div style="margin-top:8px;font-size:12px;color:var(--primary)">
+              下次随访计划：${Utils.formatDate(evalResult.nextPlan.plannedDate)}
+            </div>` : ''}
+          `, [{ label: '知道了', value: true, primary: true }]);
+
+          // Save pending actions for later handling
+          await MakeupVisit.savePendingActions(_patient.id, evalResult.actions);
+        }
+
         Utils.showToast('随访记录已保存', 'success');
         App.navigate('detail', { patientId: _patient.id });
       } catch (err) {

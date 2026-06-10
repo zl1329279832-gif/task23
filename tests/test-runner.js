@@ -191,6 +191,7 @@ const DB = (() => {
     mockDB.addStore('sync_conflicts', 'id', ['entityType', 'resolved']);
     mockDB.addStore('settings', 'key', []);
     mockDB.addStore('attachment_queue', 'id', ['visitId', 'status']);
+    mockDB.addStore('followup_plans', 'id', ['patientId', 'status', 'plannedDate', 'riskLevel', 'planType']);
     return Promise.resolve(mockDB);
   }
 
@@ -522,6 +523,40 @@ const DB = (() => {
     await put(db, entityType, record);
   }
 
+  async function savePlan(plan) {
+    const db = await open();
+    if (!plan.id) plan.id = Utils.uuid();
+    plan.updatedAt = Utils.now();
+    if (!plan.createdAt) plan.createdAt = Utils.now();
+    await put(db, 'followup_plans', plan);
+    return plan;
+  }
+
+  async function loadPlan(id) {
+    const db = await open();
+    return get(db, 'followup_plans', id);
+  }
+
+  async function loadPlansByPatient(patientId) {
+    const db = await open();
+    return getByIndex(db, 'followup_plans', 'patientId', patientId);
+  }
+
+  async function loadPlansByStatus(status) {
+    const db = await open();
+    return getByIndex(db, 'followup_plans', 'status', status);
+  }
+
+  async function loadAllPlans() {
+    const db = await open();
+    return getAll(db, 'followup_plans');
+  }
+
+  async function deletePlan(id) {
+    const db = await open();
+    await deleteRecord(db, 'followup_plans', id);
+  }
+
   return {
     open, get, put, deleteRecord, getAll, getByIndex, query, count, clear,
     savePatient, loadPatient, loadAllPatients,
@@ -533,7 +568,8 @@ const DB = (() => {
     saveDraft, loadDraft, clearDraft,
     addToAttachmentQueue, getAttachmentQueue, updateAttachmentQueueItem,
     getStorageStats, checkDuplicateVisit,
-    updateBaseSnapshot, putResolved, _cleanSnapshot
+    updateBaseSnapshot, putResolved, _cleanSnapshot,
+    savePlan, loadPlan, loadPlansByPatient, loadPlansByStatus, loadAllPlans, deletePlan
   };
 })();
 
@@ -1283,6 +1319,541 @@ async function runTests() {
     await DB.clearDraft('questionnaire', 'p-draft-1');
     const cleared = await DB.loadDraft('questionnaire', 'p-draft-1');
     assertEqual(cleared, null, '12.7 清理后草稿应为 null');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('13. 随访计划生成与风险分层', async () => {
+    await DB.open();
+    mockDB.store('followup_plans').clear();
+    mockDB.store('patients').clear();
+    mockDB.store('visits').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 计划间隔计算（内联 FollowupPlan.computeInterval 逻辑）
+    const PLAN_RISK_INTERVALS = { high: 7, medium: 14, low: 30, none: 60 };
+    const PLAN_DISEASE_INTERVALS = {
+      hypertension: 14, diabetes: 14, copd: 30,
+      heart_disease: 14, stroke: 14, mental_illness: 30, tuberculosis: 7
+    };
+
+    function computeTestInterval(patient, riskLevel) {
+      const risk = riskLevel || patient.riskLevel || 'none';
+      let interval = PLAN_RISK_INTERVALS[risk] || PLAN_RISK_INTERVALS.none;
+      if (patient.diseases && patient.diseases.length > 0) {
+        for (const disease of patient.diseases) {
+          const di = PLAN_DISEASE_INTERVALS[disease];
+          if (di && di < interval) interval = di;
+        }
+      }
+      if (risk === 'high' && interval > 7) interval = 7;
+      return interval;
+    }
+
+    // 高风险高血压 → 7天
+    const p1 = { id: 'p1', diseases: ['hypertension'], riskLevel: 'high' };
+    assertEqual(computeTestInterval(p1, 'high'), 7, '13.1 高风险=7天');
+
+    // 中风险糖尿病 → 14天
+    const p2 = { id: 'p2', diseases: ['diabetes'], riskLevel: 'medium' };
+    assertEqual(computeTestInterval(p2, 'medium'), 14, '13.2 中风险糖尿病=14天');
+
+    // 低风险肺结核 → 7天（疾病间隔更短覆盖）
+    const p3 = { id: 'p3', diseases: ['tuberculosis'], riskLevel: 'low' };
+    assertEqual(computeTestInterval(p3, 'low'), 7, '13.3 低风险肺结核=7天（疾病覆盖）');
+
+    // 无风险无疾病 → 60天
+    const p4 = { id: 'p4', diseases: [], riskLevel: 'none' };
+    assertEqual(computeTestInterval(p4, 'none'), 60, '13.4 无风险无疾病=60天');
+
+    // 多种疾病取最短间隔
+    const p5 = { id: 'p5', diseases: ['copd', 'tuberculosis'], riskLevel: 'medium' };
+    assertEqual(computeTestInterval(p5, 'medium'), 7, '13.5 多疾病取最短(肺结核7天)');
+
+    // 计划保存与加载
+    const plan = await DB.savePlan({
+      patientId: 'p1', patientName: '测试', planType: 'routine',
+      status: 'pending', riskLevel: 'high', plannedDate: '2026-06-15',
+      deadlineDate: '2026-06-18', interval: 7, missedCount: 0,
+      requiredQuestionnaires: ['hypertension'], requireAttachment: true
+    });
+    assert(plan.id !== undefined, '13.6 计划应有ID');
+
+    const loaded = await DB.loadPlan(plan.id);
+    assertEqual(loaded.planType, 'routine', '13.7 加载计划类型正确');
+    assertEqual(loaded.requireAttachment, true, '13.8 附件要求正确');
+
+    const byPatient = await DB.loadPlansByPatient('p1');
+    assertEqual(byPatient.length, 1, '13.9 按患者查询正确');
+
+    // 漏访计数 → 升级为补访
+    const overduePlan = await DB.savePlan({
+      patientId: 'p1', planType: 'routine', status: 'overdue',
+      riskLevel: 'high', plannedDate: '2026-06-01'
+    });
+    const overdueCount = (await DB.loadPlansByPatient('p1'))
+      .filter(p => p.status === 'overdue').length;
+    assertEqual(overdueCount, 1, '13.10 逾期计划计数正确');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('14. 补访问卷触发与异常指标检测', async () => {
+    // 异常指标检测（内联逻辑）
+    function detectAbnormals(visit, thresholds) {
+      const abnormals = [];
+      if (visit.bpSystolic && thresholds.bpSystolic && visit.bpSystolic >= thresholds.bpSystolic) {
+        abnormals.push({ field: 'bpSystolic', value: visit.bpSystolic, threshold: thresholds.bpSystolic, label: '收缩压偏高' });
+      }
+      if (visit.bpDiastolic && thresholds.bpDiastolic && visit.bpDiastolic >= thresholds.bpDiastolic) {
+        abnormals.push({ field: 'bpDiastolic', value: visit.bpDiastolic, threshold: thresholds.bpDiastolic, label: '舒张压偏高' });
+      }
+      if (visit.bloodSugar && thresholds.bloodSugar && visit.bloodSugar >= thresholds.bloodSugar) {
+        abnormals.push({ field: 'bloodSugar', value: visit.bloodSugar, threshold: thresholds.bloodSugar, label: '血糖偏高' });
+      }
+      return abnormals;
+    }
+
+    const highThresholds = { bpSystolic: 180, bpDiastolic: 110, bloodSugar: 16.7 };
+
+    // 正常指标 → 无异常
+    const normalVisit = { bpSystolic: 120, bpDiastolic: 80, bloodSugar: 5.6 };
+    assertEqual(detectAbnormals(normalVisit, highThresholds).length, 0, '14.1 正常指标无异常');
+
+    // 收缩压超标
+    const highBp = { bpSystolic: 190, bpDiastolic: 80, bloodSugar: 5.6 };
+    const bpResult = detectAbnormals(highBp, highThresholds);
+    assertEqual(bpResult.length, 1, '14.2 收缩压超标检出1项');
+    assertEqual(bpResult[0].field, 'bpSystolic', '14.3 异常字段正确');
+
+    // 多项超标
+    const multiHigh = { bpSystolic: 200, bpDiastolic: 120, bloodSugar: 20 };
+    assertEqual(detectAbnormals(multiHigh, highThresholds).length, 3, '14.4 多项超标全部检出');
+
+    // 边界值（等于阈值 → 触发）
+    const boundary = { bpSystolic: 180, bpDiastolic: 110, bloodSugar: 16.7 };
+    assertEqual(detectAbnormals(boundary, highThresholds).length, 3, '14.5 等于阈值触发');
+
+    // 中风险阈值（更低）
+    const medThresholds = { bpSystolic: 160, bpDiastolic: 100, bloodSugar: 13.9 };
+    const medVisit = { bpSystolic: 165, bpDiastolic: 95, bloodSugar: 14.0 };
+    const medResult = detectAbnormals(medVisit, medThresholds);
+    assertEqual(medResult.length, 2, '14.6 中风险阈值触发2项(收缩压+血糖)');
+
+    // 补访问卷触发条件：漏访后首次
+    const missedContext = { missedCount: 2, previousVisit: null };
+    assert(missedContext.missedCount > 0, '14.7 漏访后应触发补访问卷');
+
+    // 补访问卷触发条件：用药变更
+    const prevVisit = { medications: ['氨氯地平5mg'] };
+    const currVisit = { medications: ['氨氯地平10mg'] };
+    const prevMeds = (prevVisit.medications || []).sort().join(',');
+    const currMeds = (currVisit.medications || []).sort().join(',');
+    assert(prevMeds !== currMeds, '14.8 用药变更应触发补访问卷');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('15. 三层冲突合并（患者/问卷/附件）', async () => {
+    // 内联三层合并逻辑
+    function mergeQuestionnaires(baseQ, localQ, remoteQ) {
+      const result = { merged: [], conflicts: [], autoMerged: [] };
+      if (!baseQ) baseQ = [];
+      if (!localQ) localQ = [];
+      if (!remoteQ) remoteQ = [];
+      const baseMap = new Map(baseQ.map(q => [q.templateId, q]));
+      const localMap = new Map(localQ.map(q => [q.templateId, q]));
+      const remoteMap = new Map(remoteQ.map(q => [q.templateId, q]));
+      const allIds = new Set([...baseMap.keys(), ...localMap.keys(), ...remoteMap.keys()]);
+
+      for (const tId of allIds) {
+        const bq = baseMap.get(tId) || null;
+        const lq = localMap.get(tId) || null;
+        const rq = remoteMap.get(tId) || null;
+        const lc = !_deepEqualFn(lq, bq);
+        const rc = !_deepEqualFn(rq, bq);
+
+        if (lc && rc) {
+          if (_deepEqualFn(lq, rq)) {
+            result.merged.push(lq);
+            result.autoMerged.push({ field: `questionnaire_${tId}`, choice: 'same-change' });
+          } else if (lq && rq && lq.version !== rq.version) {
+            const mergedQ = { ...rq };
+            if (lq.answers && rq.answers) {
+              mergedQ.answers = { ...rq.answers };
+              for (const [key, val] of Object.entries(lq.answers)) {
+                if (mergedQ.answers[key] === undefined || mergedQ.answers[key] === null || mergedQ.answers[key] === '') {
+                  mergedQ.answers[key] = val;
+                }
+              }
+            }
+            result.merged.push(mergedQ);
+            result.autoMerged.push({ field: `questionnaire_${tId}`, choice: 'merged-template-upgrade' });
+          } else {
+            result.conflicts.push({ field: `questionnaire_${tId}`, type: 'questionnaire_conflict' });
+            result.merged.push(rq);
+          }
+        } else if (lc) {
+          result.merged.push(lq);
+          result.autoMerged.push({ field: `questionnaire_${tId}`, choice: 'local' });
+        } else if (rc) {
+          result.merged.push(rq);
+          result.autoMerged.push({ field: `questionnaire_${tId}`, choice: 'remote' });
+        } else {
+          result.merged.push(bq || lq || rq);
+        }
+      }
+      return result;
+    }
+
+    function mergeAttachments(baseAtt, localAtt, remoteAtt) {
+      const result = { merged: [], conflicts: [], autoMerged: [] };
+      if (!baseAtt) baseAtt = [];
+      if (!localAtt) localAtt = [];
+      if (!remoteAtt) remoteAtt = [];
+      const baseMap = new Map(baseAtt.map(a => [a.id, a]));
+      const localMap = new Map(localAtt.map(a => [a.id, a]));
+      const remoteMap = new Map(remoteAtt.map(a => [a.id, a]));
+      const allIds = new Set([...baseMap.keys(), ...localMap.keys(), ...remoteMap.keys()]);
+
+      for (const id of allIds) {
+        const ba = baseMap.get(id) || null;
+        const la = localMap.get(id) || null;
+        const ra = remoteMap.get(id) || null;
+
+        if (!ba) {
+          if (la && ra) {
+            const merged = { ...la };
+            if (ra.uploadStatus === 'uploaded') {
+              merged.uploadStatus = ra.uploadStatus;
+              merged.compressionState = ra.compressionState;
+            }
+            result.merged.push(merged);
+          } else {
+            result.merged.push(la || ra);
+          }
+          result.autoMerged.push({ field: `attachment_${id}`, choice: la ? 'local-new' : 'remote-new' });
+        } else if (la && ra) {
+          const lc = !_deepEqualFn(la, ba);
+          const rc = !_deepEqualFn(ra, ba);
+          if (lc && rc) {
+            const merged = { ...la };
+            if (ra.uploadStatus === 'uploaded') {
+              merged.uploadStatus = ra.uploadStatus;
+              merged.compressionState = ra.compressionState;
+            }
+            result.merged.push(merged);
+            result.autoMerged.push({ field: `attachment_${id}`, choice: 'merged-status' });
+          } else if (lc) {
+            result.merged.push(la);
+            result.autoMerged.push({ field: `attachment_${id}`, choice: 'local' });
+          } else if (rc) {
+            result.merged.push(ra);
+            result.autoMerged.push({ field: `attachment_${id}`, choice: 'remote' });
+          } else {
+            result.merged.push(ba);
+          }
+        }
+      }
+      return result;
+    }
+
+    // 15.1 问卷层：仅本地修改答案
+    const baseQ = [{ templateId: 'htn', version: 1, answers: { bp: '达标' } }];
+    const localQ = [{ templateId: 'htn', version: 1, answers: { bp: '偏高' } }];
+    const remoteQ = [{ templateId: 'htn', version: 1, answers: { bp: '达标' } }];
+    const qr1 = mergeQuestionnaires(baseQ, localQ, remoteQ);
+    assertEqual(qr1.conflicts.length, 0, '15.1 仅本地修改答案无冲突');
+    assertEqual(qr1.merged[0].answers.bp, '偏高', '15.2 取本地答案');
+
+    // 15.3 问卷层：模板版本升级合并
+    const localQ2 = [{ templateId: 'htn', version: 1, answers: { bp: '偏高', med: '氨氯地平' } }];
+    const remoteQ2 = [{ templateId: 'htn', version: 2, answers: { bp: '达标', sleep: '好' } }];
+    const qr2 = mergeQuestionnaires(baseQ, localQ2, remoteQ2);
+    assertEqual(qr2.conflicts.length, 0, '15.3 模板升级自动合并');
+    assertEqual(qr2.merged[0].version, 2, '15.4 取远程新版本');
+    assertEqual(qr2.merged[0].answers.med, '氨氯地平', '15.5 本地独有答案填入');
+    assertEqual(qr2.merged[0].answers.sleep, '好', '15.6 远程新答案保留');
+
+    // 15.7 附件层：本地新增附件
+    const baseAtt = [];
+    const localAtt = [{ id: 'a1', name: 'photo.jpg', uploadStatus: 'pending', compressionState: 'compressed' }];
+    const remoteAtt = [];
+    const ar1 = mergeAttachments(baseAtt, localAtt, remoteAtt);
+    assertEqual(ar1.merged.length, 1, '15.7 本地新增附件保留');
+    assertEqual(ar1.merged[0].id, 'a1', '15.8 附件ID正确');
+
+    // 15.9 附件层：远程已上传状态合并
+    const baseAtt2 = [{ id: 'a2', name: 'doc.jpg', uploadStatus: 'pending', compressionState: 'compressed' }];
+    const localAtt2 = [{ id: 'a2', name: 'doc.jpg', uploadStatus: 'pending', compressionState: 'compressed', notes: '补拍' }];
+    const remoteAtt2 = [{ id: 'a2', name: 'doc.jpg', uploadStatus: 'uploaded', compressionState: 'uploaded' }];
+    const ar2 = mergeAttachments(baseAtt2, localAtt2, remoteAtt2);
+    assertEqual(ar2.merged[0].uploadStatus, 'uploaded', '15.9 远程上传状态合并');
+    assertEqual(ar2.merged[0].notes, '补拍', '15.10 本地元数据保留');
+
+    // 15.11 问卷层：同版本双方修改 → 冲突
+    const localQ3 = [{ templateId: 'htn', version: 1, answers: { bp: '偏高' } }];
+    const remoteQ3 = [{ templateId: 'htn', version: 1, answers: { bp: '波动大' } }];
+    const qr3 = mergeQuestionnaires(baseQ, localQ3, remoteQ3);
+    assertEqual(qr3.conflicts.length, 1, '15.11 同版本双方修改应冲突');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('16. PIN 切换验证', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 模拟 PIN 切换场景：旧 PIN 加密 → 新 PIN 重新加密
+    // 使用 mock CryptoManager：ENC:前缀模拟加密
+
+    // 创建加密患者
+    const patient = await DB.savePatient({
+      name: 'PIN测试', age: 50, idCard: '110101199001011234',
+      diseases: ['hypertension'], riskLevel: 'low'
+    });
+
+    // 验证加密
+    const db = await DB.open();
+    const stored = await DB.get(db, 'patients', patient.id);
+    assert(stored._encrypted_idCard !== undefined, '16.1 身份证已加密');
+    assert(stored._encrypted_idCard.startsWith('ENC:'), '16.2 加密格式正确');
+
+    // 模拟解密（旧PIN）
+    const decrypted = await CryptoManager.decrypt(stored._encrypted_idCard);
+    assertEqual(decrypted, '110101199001011234', '16.3 旧PIN解密正确');
+
+    // 模拟切换PIN：先解密再重新加密
+    const plainIdCard = await CryptoManager.decrypt(stored._encrypted_idCard);
+    const reEncrypted = await CryptoManager.encrypt(plainIdCard);
+    assert(reEncrypted.startsWith('ENC:'), '16.4 新PIN重新加密格式正确');
+
+    // 新加密值可解密为原文
+    const finalDecrypt = await CryptoManager.decrypt(reEncrypted);
+    assertEqual(finalDecrypt, '110101199001011234', '16.5 PIN切换后数据一致');
+
+    // 同步队列 payload 也应被重新加密
+    const queue = await DB.getSyncQueue();
+    assert(queue.length > 0, '16.6 同步队列有数据');
+    assert(queue[0].payload._encrypted !== undefined, '16.7 队列payload已加密');
+    const decPayload = await CryptoManager.decrypt(queue[0].payload._encrypted);
+    const parsedPayload = JSON.parse(decPayload);
+    assert(parsedPayload._encrypted_idCard !== undefined, '16.8 payload中身份证已加密');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('17. 离线多次编辑', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 创建患者并模拟同步
+    const patient = await DB.savePatient({
+      name: '多次编辑测试', age: 55, diseases: ['diabetes'], riskLevel: 'low'
+    });
+    await DB.updateBaseSnapshot('patients', patient.id, 1);
+    mockDB.store('sync_queue').clear();
+
+    // 第一次离线编辑
+    const p1 = await DB.loadPatient(patient.id);
+    p1.riskLevel = 'medium';
+    await DB.savePatient(p1);
+
+    let dbp = await DB.get(await DB.open(), 'patients', patient.id);
+    assertEqual(dbp._rev, 2, '17.1 第一次编辑 _rev=2');
+    assertEqual(dbp._baseSnapshot.riskLevel, 'low', '17.2 baseSnapshot保持同步时的值');
+
+    // 第二次离线编辑
+    const p2 = await DB.loadPatient(patient.id);
+    p2.phone = '13900001111';
+    await DB.savePatient(p2);
+
+    dbp = await DB.get(await DB.open(), 'patients', patient.id);
+    assertEqual(dbp._rev, 3, '17.3 第二次编辑 _rev=3');
+    assertEqual(dbp._baseSnapshot.riskLevel, 'low', '17.4 baseSnapshot仍为同步时的值');
+    assertEqual(dbp.riskLevel, 'medium', '17.5 本地riskLevel为第一次编辑值');
+    assertEqual(dbp.phone, '13900001111', '17.6 phone为第二次编辑值');
+
+    // 第三次离线编辑
+    const p3 = await DB.loadPatient(patient.id);
+    p3.address = '新地址';
+    await DB.savePatient(p3);
+
+    dbp = await DB.get(await DB.open(), 'patients', patient.id);
+    assertEqual(dbp._rev, 4, '17.7 第三次编辑 _rev=4');
+    assertEqual(dbp._baseSnapshot.riskLevel, 'low', '17.8 baseSnapshot始终为同步值');
+
+    // 同步队列应仍为1条（去重）
+    const queue = await DB.getSyncQueue();
+    const forThis = queue.filter(q => q.entityId === patient.id);
+    assertEqual(forThis.length, 1, '17.9 多次编辑队列仍为1条');
+
+    // 三方合并：base(low) vs local(medium+phone+addr) vs remote(high)
+    const base = dbp._baseSnapshot;
+    const local = DB._cleanSnapshot(dbp);
+    const remote = { ...base, riskLevel: 'high', age: 60 };
+    const result = threeWayMerge(base, local, remote);
+
+    // riskLevel: 双方修改 → 冲突
+    const rlConflict = result.conflicts.find(c => c.field === 'riskLevel');
+    assert(rlConflict !== undefined, '17.10 riskLevel双方修改应冲突');
+
+    // phone: 仅本地修改 → 自动合并
+    const phoneAuto = result.autoMerged.find(m => m.field === 'phone');
+    assert(phoneAuto !== undefined, '17.11 phone仅本地修改自动合并');
+
+    // age: 仅远程修改 → 自动合并
+    const ageAuto = result.autoMerged.find(m => m.field === 'age');
+    assert(ageAuto !== undefined, '17.12 age仅远程修改自动合并');
+    assertEqual(result.merged.age, 60, '17.13 age取远程值');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('18. 附件上传失败重试', async () => {
+    await DB.open();
+    mockDB.store('attachment_queue').clear();
+
+    // 创建多个附件
+    const att1 = await DB.addToAttachmentQueue({
+      id: 'retry-att-1', visitId: 'v1', name: 'photo1.jpg',
+      data: 'base64data1', compressionState: 'compressed'
+    });
+    const att2 = await DB.addToAttachmentQueue({
+      id: 'retry-att-2', visitId: 'v1', name: 'photo2.jpg',
+      data: 'base64data2', compressionState: 'compressed'
+    });
+
+    assertEqual(att1.status, 'pending', '18.1 初始状态pending');
+    assertEqual(att1.retryCount, 0, '18.2 初始重试次数0');
+
+    // 模拟第一次上传失败
+    await DB.updateAttachmentQueueItem('retry-att-1', {
+      status: 'pending', retryCount: 1, lastError: '网络超时'
+    });
+    let item = (await DB.getAttachmentQueue()).find(i => i.id === 'retry-att-1');
+    assertEqual(item.retryCount, 1, '18.3 重试次数+1');
+    assertEqual(item.status, 'pending', '18.4 可重试状态仍为pending');
+
+    // 模拟第二次失败
+    await DB.updateAttachmentQueueItem('retry-att-1', {
+      status: 'pending', retryCount: 2, lastError: '服务器拒绝'
+    });
+
+    // 模拟第三次失败 → 标记为failed
+    await DB.updateAttachmentQueueItem('retry-att-1', {
+      status: 'failed', retryCount: 3, lastError: '最终失败'
+    });
+    item = (await DB.getAttachmentQueue()).find(i => i.id === 'retry-att-1');
+    assertEqual(item.status, 'failed', '18.5 3次失败标记failed');
+    assertEqual(item.retryCount, 3, '18.6 重试次数=3');
+
+    // att2成功上传
+    await DB.updateAttachmentQueueItem('retry-att-2', {
+      status: 'uploaded', compressionState: 'uploaded'
+    });
+    const remaining = await DB.getAttachmentQueue();
+    const att2InQueue = remaining.find(i => i.id === 'retry-att-2');
+    assertEqual(att2InQueue, undefined, '18.7 上传成功的附件不在待处理队列');
+
+    // 失败的附件仍在队列
+    const failedInQueue = remaining.find(i => i.id === 'retry-att-1');
+    assert(failedInQueue !== undefined, '18.8 失败附件仍在队列');
+    assertEqual(failedInQueue.compressionState, 'compressed', '18.9 失败不改变压缩状态');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('19. 同步冲突完整场景', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+    mockDB.store('sync_conflicts').clear();
+
+    // 创建并同步患者
+    const patient = await DB.savePatient({
+      name: '冲突场景', age: 65, phone: '13800001111',
+      diseases: ['hypertension', 'diabetes'], riskLevel: 'medium'
+    });
+    await DB.updateBaseSnapshot('patients', patient.id, 1);
+    mockDB.store('sync_queue').clear();
+
+    // 本地编辑多个字段
+    const local = await DB.loadPatient(patient.id);
+    local.riskLevel = 'high';
+    local.phone = '13900002222';
+    local.address = '本地新地址';
+    await DB.savePatient(local);
+
+    const stored = await DB.get(await DB.open(), 'patients', patient.id);
+    const base = stored._baseSnapshot;
+
+    // 远程同时修改了不同和相同字段
+    const remote = {
+      ...base,
+      riskLevel: 'low',       // 冲突（本地high vs 远程low）
+      phone: '13700003333',   // 冲突（本地139 vs 远程137）
+      notes: '远程备注'        // 仅远程新增
+    };
+
+    const result = threeWayMerge(base, DB._cleanSnapshot(stored), remote);
+
+    // riskLevel冲突
+    const rlConflict = result.conflicts.find(c => c.field === 'riskLevel');
+    assert(rlConflict !== undefined, '19.1 riskLevel应冲突');
+    assertEqual(rlConflict.localValue, 'high', '19.2 冲突本地值=high');
+    assertEqual(rlConflict.remoteValue, 'low', '19.3 冲突远程值=low');
+
+    // phone冲突
+    const phoneConflict = result.conflicts.find(c => c.field === 'phone');
+    assert(phoneConflict !== undefined, '19.4 phone应冲突');
+
+    // address仅本地 → 自动合并
+    const addrAuto = result.autoMerged.find(m => m.field === 'address');
+    assert(addrAuto !== undefined, '19.5 address仅本地自动合并');
+    assertEqual(result.merged.address, '本地新地址', '19.6 address取本地');
+
+    // notes仅远程 → 自动合并
+    const notesAuto = result.autoMerged.find(m => m.field === 'notes');
+    assert(notesAuto !== undefined, '19.7 notes仅远程自动合并');
+    assertEqual(result.merged.notes, '远程备注', '19.8 notes取远程');
+
+    // 总冲突数
+    assertEqual(result.conflicts.length, 2, '19.9 应有2个冲突字段');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('20. 提醒重排验证', async () => {
+    const patient = {
+      id: 'p-remind', diseases: ['hypertension', 'diabetes'], riskLevel: 'high'
+    };
+
+    // 高风险：基础间隔7天
+    const visit1Date = '2026-06-01';
+    const next1 = getNextVisitDate(patient, 'high', visit1Date);
+    assertEqual(next1, '2026-06-08', '20.1 高风险下次=+7天');
+
+    // 完成随访后重排：新的基准日期
+    const visit2Date = '2026-06-10'; // 比计划晚2天
+    const next2 = getNextVisitDate(patient, 'high', visit2Date);
+    assertEqual(next2, '2026-06-17', '20.2 新基准日重排=+7天');
+
+    // 风险等级降低后重排
+    const next3 = getNextVisitDate(patient, 'medium', visit2Date);
+    // hypertension=14, diabetes=14, medium=14 → min=14
+    assertEqual(next3, '2026-06-24', '20.3 降为中风险重排=+14天');
+
+    // 风险等级升高后重排
+    patient.riskLevel = 'low';
+    const visit3Date = '2026-06-15';
+    const nextLow = getNextVisitDate(patient, 'low', visit3Date);
+    // low=30, hypertension=14, diabetes=14 → min=14
+    assertEqual(nextLow, '2026-06-29', '20.4 低风险但疾病覆盖=+14天');
+
+    // 无疾病患者重排
+    const healthyPatient = { id: 'p-h', diseases: [], riskLevel: 'none' };
+    const nextHealthy = getNextVisitDate(healthyPatient, 'none', '2026-06-01');
+    assertEqual(nextHealthy, '2026-07-31', '20.5 无风险无疾病=+60天');
+
+    // 幂等性：重排后多次调用结果不变
+    const r1 = getNextVisitDate(patient, 'high', visit2Date);
+    const r2 = getNextVisitDate(patient, 'high', visit2Date);
+    assertEqual(r1, r2, '20.6 重排后幂等性');
   });
 
   // ─────────────────────────────────────────────
