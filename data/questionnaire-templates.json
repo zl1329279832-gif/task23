@@ -1,0 +1,317 @@
+[
+  {
+    "id": "hypertension_v1",
+    "version": 1,
+    "name": "高血压随访问卷",
+    "diseaseType": "hypertension",
+    "questions": [
+      {
+        "id": "bp_control",
+        "text": "近两周血压控制情况",
+        "type": "select",
+        "options": ["稳定达标", "偶有偏高", "持续偏高", "波动较大"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "bp_high_freq",
+        "text": "血压偏高的频率",
+        "type": "select",
+        "options": ["几乎每天", "每周2-3次", "每周1次", "偶尔"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": { "questionId": "bp_control", "answerValue": ["偶有偏高", "持续偏高", "波动较大"] }
+      },
+      {
+        "id": "bp_high_time",
+        "text": "血压偏高通常在什么时段",
+        "type": "multi",
+        "options": ["晨起", "上午", "午后", "傍晚", "夜间"],
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "bp_high_freq", "answerValue": ["几乎每天", "每周2-3次"] }
+      },
+      {
+        "id": "medication_compliance",
+        "text": "是否按时服药",
+        "type": "select",
+        "options": ["完全按时", "偶尔漏服", "经常漏服", "自行停药"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "medication_side_effects",
+        "text": "有无药物不良反应",
+        "type": "multi",
+        "options": ["无", "头晕", "干咳", "水肿", "乏力", "其他"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "side_effect_detail",
+        "text": "请描述不良反应详情",
+        "type": "text",
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "medication_side_effects", "answerValue": ["头晕", "干咳", "水肿", "乏力", "其他"] }
+      },
+      {
+        "id": "lifestyle_salt",
+        "text": "每日食盐摄入量估计",
+        "type": "select",
+        "options": ["少于6克", "6-10克", "超过10克", "不确定"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "lifestyle_exercise",
+        "text": "每周运动次数",
+        "type": "select",
+        "options": ["几乎不运动", "1-2次", "3-5次", "每天"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "lifestyle_exercise_type",
+        "text": "主要运动方式",
+        "type": "multi",
+        "options": ["散步", "慢跑", "太极", "广场舞", "游泳", "其他"],
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "lifestyle_exercise", "answerValue": ["1-2次", "3-5次", "每天"] }
+      },
+      {
+        "id": "symptoms",
+        "text": "近期有无以下症状",
+        "type": "multi",
+        "options": ["无", "头痛", "头晕", "胸闷", "心悸", "视物模糊", "肢体麻木"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "symptom_severity",
+        "text": "症状严重程度",
+        "type": "select",
+        "options": ["轻微", "中等", "严重"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": { "questionId": "symptoms", "answerValue": ["头痛", "头晕", "胸闷", "心悸", "视物模糊", "肢体麻木"] }
+      },
+      {
+        "id": "elderly_fall_risk",
+        "text": "有无跌倒风险（步态不稳、头晕等）",
+        "type": "select",
+        "options": ["无风险", "低风险", "中风险", "高风险"],
+        "required": true,
+        "conditions": { "field": "age", "operator": "gte", "value": 65 },
+        "dependsOn": null
+      },
+      {
+        "id": "self_care_ability",
+        "text": "日常生活自理能力",
+        "type": "select",
+        "options": ["完全自理", "部分自理", "需要照护"],
+        "required": true,
+        "conditions": { "field": "age", "operator": "gte", "value": 65 },
+        "dependsOn": null
+      }
+    ]
+  },
+  {
+    "id": "diabetes_v1",
+    "version": 1,
+    "name": "糖尿病随访问卷",
+    "diseaseType": "diabetes",
+    "questions": [
+      {
+        "id": "glucose_control",
+        "text": "近两周血糖控制情况",
+        "type": "select",
+        "options": ["稳定达标", "偶有偏高", "持续偏高", "波动较大", "频繁低血糖"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "glucose_monitoring_freq",
+        "text": "血糖自测频率",
+        "type": "select",
+        "options": ["每天多次", "每天一次", "每周几次", "偶尔", "从不自测"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "fasting_glucose_range",
+        "text": "空腹血糖一般在什么范围",
+        "type": "select",
+        "options": ["<6.1", "6.1-7.0", "7.0-10.0", ">10.0", "不确定"],
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "glucose_monitoring_freq", "answerValue": ["每天多次", "每天一次", "每周几次"] }
+      },
+      {
+        "id": "medication_type",
+        "text": "当前降糖治疗方式",
+        "type": "multi",
+        "options": ["口服降糖药", "胰岛素注射", "饮食控制", "运动疗法"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "insulin_type",
+        "text": "胰岛素类型",
+        "type": "select",
+        "options": ["长效", "短效", "预混", "胰岛素泵"],
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "medication_type", "answerValue": "胰岛素注射" }
+      },
+      {
+        "id": "medication_compliance",
+        "text": "治疗依从性",
+        "type": "select",
+        "options": ["完全遵医嘱", "基本遵守", "偶尔不遵守", "经常不遵守"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "diet_control",
+        "text": "饮食控制情况",
+        "type": "select",
+        "options": ["严格控制", "基本控制", "较随意", "完全不控制"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "hypoglycemia_episodes",
+        "text": "近两周有无低血糖反应",
+        "type": "select",
+        "options": ["无", "偶有(1-2次)", "多次(3次以上)"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "hypoglycemia_symptoms",
+        "text": "低血糖时的症状",
+        "type": "multi",
+        "options": ["心慌", "出汗", "手抖", "饥饿感", "头晕", "意识模糊"],
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "hypoglycemia_episodes", "answerValue": ["偶有(1-2次)", "多次(3次以上)"] }
+      },
+      {
+        "id": "foot_check",
+        "text": "足部检查情况",
+        "type": "multi",
+        "options": ["正常", "皮肤干燥", "麻木感", "刺痛感", "伤口/溃疡", "变色"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "vision_change",
+        "text": "视力有无变化",
+        "type": "select",
+        "options": ["无变化", "轻微下降", "明显下降", "视物模糊"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "kidney_symptoms",
+        "text": "有无肾脏相关症状",
+        "type": "multi",
+        "options": ["无", "泡沫尿", "水肿", "尿量变化"],
+        "required": true,
+        "conditions": { "field": "age", "operator": "gte", "value": 50 },
+        "dependsOn": null
+      },
+      {
+        "id": "weight_change",
+        "text": "近期体重变化",
+        "type": "select",
+        "options": ["无明显变化", "增加1-3kg", "增加3kg以上", "减轻1-3kg", "减轻3kg以上"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      }
+    ]
+  },
+  {
+    "id": "general_v1",
+    "version": 1,
+    "name": "通用随访问卷",
+    "diseaseType": "general",
+    "questions": [
+      {
+        "id": "general_health",
+        "text": "整体健康状况自评",
+        "type": "select",
+        "options": ["很好", "较好", "一般", "较差", "很差"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "new_symptoms",
+        "text": "有无新出现的不适症状",
+        "type": "boolean",
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "symptom_detail",
+        "text": "请描述新出现的症状",
+        "type": "text",
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "new_symptoms", "answerValue": true }
+      },
+      {
+        "id": "medication_changes",
+        "text": "用药有无变化",
+        "type": "select",
+        "options": ["无变化", "新增药物", "调整剂量", "停药", "换药"],
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "medication_detail",
+        "text": "请说明用药变化",
+        "type": "text",
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "medication_changes", "answerValue": ["新增药物", "调整剂量", "停药", "换药"] }
+      },
+      {
+        "id": "hospitalization",
+        "text": "近期是否住院",
+        "type": "boolean",
+        "required": true,
+        "conditions": null,
+        "dependsOn": null
+      },
+      {
+        "id": "hospitalization_reason",
+        "text": "住院原因及医院名称",
+        "type": "text",
+        "required": false,
+        "conditions": null,
+        "dependsOn": { "questionId": "hospitalization", "answerValue": true }
+      }
+    ]
+  }
+]
