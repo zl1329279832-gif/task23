@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>医疗随访系统 - 测试</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 16px; background: #f5f5f5; }
+    h1 { font-size: 18px; margin-bottom: 16px; }
+    .suite { background: white; border-radius: 8px; margin-bottom: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .suite-header { padding: 12px 16px; font-weight: 600; font-size: 14px; background: #f8f9fa; border-bottom: 1px solid #eee; }
+    .test { padding: 8px 16px; font-size: 13px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
+    .test:last-child { border-bottom: none; }
+    .test.pass { color: #155724; }
+    .test.fail { color: #721c24; background: #fff5f5; }
+    .test .icon { width: 16px; text-align: center; }
+    .test .error { font-size: 11px; color: #721c24; margin-top: 4px; font-family: monospace; white-space: pre-wrap; }
+    #summary { padding: 12px 16px; font-size: 14px; font-weight: 600; border-radius: 8px; margin-bottom: 16px; }
+    #summary.all-pass { background: #d4edda; color: #155724; }
+    #summary.has-fail { background: #f8d7da; color: #721c24; }
+    /* 页面需要这些隐藏元素给 showToast 和 banner 使用 */
+    #reminder-banner, #reminder-text, #toast-container { display: none; }
+  </style>
+</head>
+<body>
+  <h1>医疗随访系统 · 合并与同步测试</h1>
+  <div id="summary">运行中...</div>
+  <div id="results"></div>
+  <div id="reminder-banner"><span id="reminder-text"></span></div>
+  <div id="view-container"></div>
+  <div id="page-title"></div>
+  <div id="btn-back" style="display:none"></div>
+  <div id="bottom-nav" style="display:none"></div>
+
+  <!-- 加载应用源码 -->
+  <script src="../lib/utils.js"></script>
+  <script src="../lib/db.js"></script>
+  <script src="../lib/crypto.js"></script>
+  <script src="../lib/attachments.js"></script>
+  <script src="../lib/questionnaire-engine.js"></script>
+  <script src="../lib/reminders.js"></script>
+  <script src="../lib/sync.js"></script>
+  <script src="../views/conflict.js"></script>
+
+  <!-- 测试代码 -->
+  <script src="test-merge-sync.js"></script>
+</body>
+</html>

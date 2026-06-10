@@ -300,11 +300,13 @@ const QuestionnaireView = (() => {
         completedAt: Utils.now()
       };
 
-      // Save as visit record
+      // Save as visit record（包含模板版本用于同步冲突检测）
       const visit = {
         id: Utils.uuid(),
         patientId: _patient.id,
         date: Utils.today(),
+        templateId: template.id,
+        templateVersion: template.version,
         questionnaires: [questionnaireData],
         riskLevel: 'none',
         isDraft: false,
