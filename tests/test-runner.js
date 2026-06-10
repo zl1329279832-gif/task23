@@ -191,6 +191,8 @@ const DB = (() => {
     mockDB.addStore('sync_conflicts', 'id', ['entityType', 'resolved']);
     mockDB.addStore('settings', 'key', []);
     mockDB.addStore('attachment_queue', 'id', ['visitId', 'status']);
+    mockDB.addStore('followup_plans', 'id', ['patientId', 'status', 'planDate', 'priority']);
+    mockDB.addStore('risk_config', 'id', ['priority']);
     return Promise.resolve(mockDB);
   }
 
@@ -522,6 +524,44 @@ const DB = (() => {
     await put(db, entityType, record);
   }
 
+  // --- 随访计划操作 ---
+  async function savePlan(plan) {
+    const db = await open();
+    if (!plan.id) plan.id = Utils.uuid();
+    plan.updatedAt = Utils.now();
+    await put(db, 'followup_plans', plan);
+    return plan;
+  }
+  async function getAllPlans() {
+    const db = await open();
+    return getAll(db, 'followup_plans');
+  }
+  async function getPlansByPatient(patientId) {
+    const db = await open();
+    return getByIndex(db, 'followup_plans', 'patientId', patientId);
+  }
+  async function deletePlan(id) {
+    const db = await open();
+    await deleteRecord(db, 'followup_plans', id);
+  }
+
+  // --- 风险配置操作 ---
+  async function saveRiskConfig(rule) {
+    const db = await open();
+    if (!rule.id) rule.id = Utils.uuid();
+    rule.updatedAt = Utils.now();
+    await put(db, 'risk_config', rule);
+    return rule;
+  }
+  async function getRiskConfig() {
+    const db = await open();
+    return getAll(db, 'risk_config');
+  }
+  async function clearRiskConfig() {
+    const db = await open();
+    await clear(db, 'risk_config');
+  }
+
   return {
     open, get, put, deleteRecord, getAll, getByIndex, query, count, clear,
     savePatient, loadPatient, loadAllPatients,
@@ -533,7 +573,9 @@ const DB = (() => {
     saveDraft, loadDraft, clearDraft,
     addToAttachmentQueue, getAttachmentQueue, updateAttachmentQueueItem,
     getStorageStats, checkDuplicateVisit,
-    updateBaseSnapshot, putResolved, _cleanSnapshot
+    updateBaseSnapshot, putResolved, _cleanSnapshot,
+    savePlan, getAllPlans, getPlansByPatient, deletePlan,
+    saveRiskConfig, getRiskConfig, clearRiskConfig
   };
 })();
 
@@ -1283,6 +1325,388 @@ async function runTests() {
     await DB.clearDraft('questionnaire', 'p-draft-1');
     const cleared = await DB.loadDraft('questionnaire', 'p-draft-1');
     assertEqual(cleared, null, '12.7 清理后草稿应为 null');
+  });
+
+  // ─────────────────────────────────────────────
+  // ==================== 三层级合并函数（从 sync.js 提取） ====================
+  function threeLevelMerge(base, local, remote, entityType) {
+    const result = threeWayMerge(base, local, remote);
+    const levelDetails = { patient: [], questionnaire: [], attachment: [] };
+
+    if (entityType !== 'visits') {
+      levelDetails.patient = result.autoMerged.map(a => ({
+        field: a.field, choice: a.choice, level: 'patient'
+      }));
+      return { ...result, levelDetails };
+    }
+
+    // 问卷层级合并
+    if (local?.questionnaires || remote?.questionnaires) {
+      const baseQ = (base?.questionnaires || []);
+      const localQ = (local?.questionnaires || []);
+      const remoteQ = (remote?.questionnaires || []);
+      const allIds = new Set();
+      localQ.forEach(q => allIds.add(q.templateId));
+      remoteQ.forEach(q => allIds.add(q.templateId));
+
+      const merged = [];
+      for (const tid of allIds) {
+        const baseItem = baseQ.find(q => q.templateId === tid);
+        const localItem = localQ.find(q => q.templateId === tid);
+        const remoteItem = remoteQ.find(q => q.templateId === tid);
+
+        if (localItem && remoteItem) {
+          const baseAnswers = baseItem ? baseItem.answers : {};
+          const answerMerge = threeWayMerge(baseAnswers, localItem.answers || {}, remoteItem.answers || {});
+          merged.push({
+            templateId: tid,
+            version: Math.max(localItem.version || 0, remoteItem.version || 0),
+            answers: answerMerge.merged,
+            _mergeConflicts: answerMerge.conflicts.length
+          });
+          if (answerMerge.conflicts.length > 0) {
+            levelDetails.questionnaire.push({ templateId: tid, conflicts: answerMerge.conflicts.length, level: 'questionnaire' });
+          }
+        } else if (localItem) {
+          merged.push(localItem);
+        } else if (remoteItem) {
+          merged.push(remoteItem);
+        }
+      }
+      result.merged.questionnaires = merged;
+    }
+
+    // 附件层级合并
+    if (local?.attachments || remote?.attachments) {
+      const baseA = (base?.attachments || []);
+      const localA = (local?.attachments || []);
+      const remoteA = (remote?.attachments || []);
+      const allIds = new Set();
+      localA.forEach(a => { if (a.id) allIds.add(a.id); });
+      remoteA.forEach(a => { if (a.id) allIds.add(a.id); });
+
+      const merged = [];
+      for (const aid of allIds) {
+        const localItem = localA.find(a => a.id === aid);
+        const remoteItem = remoteA.find(a => a.id === aid);
+
+        if (localItem && remoteItem) {
+          if (remoteItem.uploadStatus === 'uploaded') merged.push(remoteItem);
+          else if (localItem.uploadStatus === 'uploaded') merged.push(localItem);
+          else {
+            const ls = localItem.compressedSize || Infinity;
+            const rs = remoteItem.compressedSize || Infinity;
+            merged.push(ls <= rs ? localItem : remoteItem);
+          }
+        } else if (localItem) { merged.push(localItem); }
+        else if (remoteItem) { merged.push(remoteItem); }
+      }
+      result.merged.attachments = merged;
+    }
+
+    return { ...result, levelDetails };
+  }
+
+  // ==================== 随访计划逻辑（从 followup-plan.js 提取） ====================
+  const ABNORMAL_THRESHOLDS = {
+    bpSystolicHigh: { threshold: 180, unit: 'mmHg', label: '收缩压严重偏高' },
+    bpDiastolicHigh: { threshold: 110, unit: 'mmHg', label: '舒张压严重偏高' },
+    bloodSugarHigh: { threshold: 16.7, unit: 'mmol/L', label: '血糖严重偏高' },
+    bloodSugarLow: { threshold: 3.9, unit: 'mmol/L', label: '血糖偏低' }
+  };
+
+  function detectAbnormalIndicators(visit) {
+    if (!visit) return [];
+    const indicators = [];
+    if (visit.bpSystolic && visit.bpSystolic >= ABNORMAL_THRESHOLDS.bpSystolicHigh.threshold) {
+      indicators.push({ field: 'bpSystolic', value: visit.bpSystolic, severity: 'high', label: ABNORMAL_THRESHOLDS.bpSystolicHigh.label });
+    }
+    if (visit.bpDiastolic && visit.bpDiastolic >= ABNORMAL_THRESHOLDS.bpDiastolicHigh.threshold) {
+      indicators.push({ field: 'bpDiastolic', value: visit.bpDiastolic, severity: 'high', label: ABNORMAL_THRESHOLDS.bpDiastolicHigh.label });
+    }
+    if (visit.bloodSugar) {
+      if (visit.bloodSugar >= ABNORMAL_THRESHOLDS.bloodSugarHigh.threshold) {
+        indicators.push({ field: 'bloodSugar', value: visit.bloodSugar, severity: 'high', label: ABNORMAL_THRESHOLDS.bloodSugarHigh.label });
+      }
+      if (visit.bloodSugar <= ABNORMAL_THRESHOLDS.bloodSugarLow.threshold) {
+        indicators.push({ field: 'bloodSugar', value: visit.bloodSugar, severity: 'warning', label: ABNORMAL_THRESHOLDS.bloodSugarLow.label });
+      }
+    }
+    return indicators;
+  }
+
+  function evaluateRevisitTrigger(missedCount) {
+    if (missedCount < 1) return { action: 'none' };
+    if (missedCount === 1) return { action: 'questionnaire' };
+    if (missedCount === 2) return { action: 'reminder' };
+    return { action: 'report' };
+  }
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('13. 三层级冲突合并', async () => {
+    // 患者层级
+    const pBase = { name: '张三', age: 60, riskLevel: 'medium' };
+    const pLocal = { ...pBase, age: 61 };
+    const pRemote = { ...pBase, riskLevel: 'high' };
+    const pResult = threeLevelMerge(pBase, pLocal, pRemote, 'patients');
+    assertEqual(pResult.merged.age, 61, '13.1 患者层级：本地 age 保留');
+    assertEqual(pResult.merged.riskLevel, 'high', '13.2 患者层级：远程 riskLevel 保留');
+    assertEqual(pResult.conflicts.length, 0, '13.3 患者层级：无冲突');
+
+    // 问卷层级
+    const vBase = {
+      questionnaires: [{ templateId: 'ht_v1', version: 1, answers: { q1: 'A', q2: 'B' } }]
+    };
+    const vLocal = {
+      questionnaires: [{ templateId: 'ht_v1', version: 1, answers: { q1: 'A', q2: 'C' } }]
+    };
+    const vRemote = {
+      questionnaires: [{ templateId: 'ht_v1', version: 2, answers: { q1: 'D', q2: 'B' } }]
+    };
+    const vResult = threeLevelMerge(vBase, vLocal, vRemote, 'visits');
+    assertEqual(vResult.merged.questionnaires.length, 1, '13.4 问卷层级：合并为1');
+    assertEqual(vResult.merged.questionnaires[0].version, 2, '13.5 问卷层级：取高版本');
+    assertEqual(vResult.merged.questionnaires[0].answers.q2, 'C', '13.6 问卷层级：本地 q2 保留');
+    assertEqual(vResult.merged.questionnaires[0].answers.q1, 'D', '13.7 问卷层级：远程 q1 保留');
+
+    // 附件层级
+    const aBase = { attachments: [{ id: 'a1', uploadStatus: 'pending', compressedSize: 100 }] };
+    const aLocal = {
+      attachments: [
+        { id: 'a1', uploadStatus: 'pending', compressedSize: 80 },
+        { id: 'a2', uploadStatus: 'pending', compressedSize: 90 }
+      ]
+    };
+    const aRemote = {
+      attachments: [{ id: 'a1', uploadStatus: 'uploaded', compressedSize: 100 }]
+    };
+    const aResult = threeLevelMerge(aBase, aLocal, aRemote, 'visits');
+    assertEqual(aResult.merged.attachments.length, 2, '13.8 附件层级：合并后2个');
+    const mergedA1 = aResult.merged.attachments.find(a => a.id === 'a1');
+    assertEqual(mergedA1.uploadStatus, 'uploaded', '13.9 附件层级：远程已上传优先');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('14. 随访计划生成与规则匹配', async () => {
+    const DEFAULT_RULES = [
+      { id: 'r1', priority: 1, conditions: [{ field: 'riskLevel', operator: 'eq', value: 'high' }], intervalDays: 7 },
+      { id: 'r2', priority: 2, conditions: [{ field: 'riskLevel', operator: 'eq', value: 'medium' }], intervalDays: 14 },
+      { id: 'r3', priority: 3, conditions: [{ field: 'riskLevel', operator: 'eq', value: 'low' }], intervalDays: 30 }
+    ];
+
+    function matchRule(patient, rules) {
+      const sorted = [...rules].sort((a, b) => a.priority - b.priority);
+      for (const rule of sorted) {
+        const match = rule.conditions.every(c => {
+          const val = patient[c.field];
+          if (c.operator === 'eq') return val === c.value;
+          if (c.operator === 'gte') return val >= c.value;
+          return true;
+        });
+        if (match) return rule;
+      }
+      return null;
+    }
+
+    const highP = { riskLevel: 'high', diseases: ['hypertension'] };
+    const r1 = matchRule(highP, DEFAULT_RULES);
+    assert(r1 !== null, '14.1 高风险匹配到规则');
+    assertEqual(r1.intervalDays, 7, '14.2 高风险间隔7天');
+
+    const medP = { riskLevel: 'medium', diseases: [] };
+    const r2 = matchRule(medP, DEFAULT_RULES);
+    assertEqual(r2.intervalDays, 14, '14.3 中风险间隔14天');
+
+    // 计划日期计算
+    const visitDate = '2026-06-01';
+    const planDate = Utils.addDays(visitDate, 7);
+    assertEqual(planDate, '2026-06-08', '14.4 计划日期=就诊日+间隔');
+
+    // 宽限期
+    const dueDate = Utils.addDays(planDate, 3);
+    assertEqual(dueDate, '2026-06-11', '14.5 截止日期=计划日+3天宽限');
+
+    // DB CRUD
+    const plan = {
+      id: 'plan-test-1', patientId: 'p1', planDate: '2026-06-08',
+      dueDate: '2026-06-11', status: 'pending', priority: 1
+    };
+    await DB.savePlan(plan);
+    const allPlans = await DB.getAllPlans();
+    assert(allPlans.length >= 1, '14.6 计划保存成功');
+    const byPatient = await DB.getPlansByPatient('p1');
+    assert(byPatient.length >= 1, '14.7 按患者查询计划');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('15. 异常指标检测与补访触发', async () => {
+    // 异常检测
+    const abnormal = detectAbnormalIndicators({ bpSystolic: 190, bpDiastolic: 115, bloodSugar: 18.0 });
+    assert(abnormal.length >= 2, '15.1 检测到至少2个异常');
+    const bpHigh = abnormal.find(i => i.field === 'bpSystolic');
+    assert(bpHigh !== undefined, '15.2 检测到收缩压异常');
+    assertEqual(bpHigh.severity, 'high', '15.3 收缩压异常严重度');
+
+    const normal = detectAbnormalIndicators({ bpSystolic: 120, bpDiastolic: 80, bloodSugar: 5.6 });
+    assertEqual(normal.length, 0, '15.4 正常值无异常');
+
+    // 低血糖
+    const lowBS = detectAbnormalIndicators({ bloodSugar: 3.5 });
+    const lowIndicator = lowBS.find(i => i.field === 'bloodSugar');
+    assert(lowIndicator !== undefined, '15.5 检测到低血糖');
+
+    // 补访触发
+    const t0 = evaluateRevisitTrigger(0);
+    assertEqual(t0.action, 'none', '15.6 0次漏访无补访');
+    const t1 = evaluateRevisitTrigger(1);
+    assertEqual(t1.action, 'questionnaire', '15.7 1次漏访→问卷');
+    const t2 = evaluateRevisitTrigger(2);
+    assertEqual(t2.action, 'reminder', '15.8 2次漏访→提醒');
+    const t3 = evaluateRevisitTrigger(3);
+    assertEqual(t3.action, 'report', '15.9 3次漏访→上报');
+    const t5 = evaluateRevisitTrigger(5);
+    assertEqual(t5.action, 'report', '15.10 5次漏访→上报');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('16. PIN 切换验证', async () => {
+    // PIN 格式校验
+    const validPins = ['1234', '0000', '123456'];
+    const invalidPins = ['12', '1234567', 'abcd', ''];
+    validPins.forEach(pin => {
+      const valid = pin.length >= 4 && pin.length <= 6 && /^\d+$/.test(pin);
+      assert(valid, `16.x PIN "${pin}" 有效`);
+    });
+    invalidPins.forEach(pin => {
+      const valid = pin.length >= 4 && pin.length <= 6 && /^\d+$/.test(pin);
+      assert(!valid, `16.x PIN "${pin}" 无效`);
+    });
+
+    // PIN 设置与切换标记
+    await DB.setSetting('pin_verify', 'test_pin_hash');
+    const pinHash = await DB.getSetting('pin_verify');
+    assert(pinHash !== null, '16.4 PIN 验证标记已设置');
+
+    await DB.setSetting('pin_switched', true);
+    const switched = await DB.getSetting('pin_switched');
+    assertEqual(switched, true, '16.5 PIN 切换标记正确');
+
+    // 自动锁定设置
+    await DB.setSetting('autoLockMinutes', '10');
+    const lockMinutes = await DB.getSetting('autoLockMinutes');
+    assertEqual(lockMinutes, '10', '16.6 自动锁定时间设置正确');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('17. 离线多次编辑 _rev 追踪', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 创建患者
+    const patient = { id: 'rev-test-1', name: '编辑测试', age: 50, diseases: [], riskLevel: 'low', syncStatus: 'pending' };
+    await DB.savePatient(patient);
+    let loaded = await DB.loadPatient('rev-test-1');
+    assertEqual(loaded._rev, 1, '17.1 创建后 _rev=1');
+
+    // 第一次编辑
+    loaded.age = 51;
+    await DB.savePatient(loaded);
+    loaded = await DB.loadPatient('rev-test-1');
+    assertEqual(loaded._rev, 2, '17.2 第一次编辑后 _rev=2');
+
+    // 第二次编辑
+    loaded.riskLevel = 'medium';
+    await DB.savePatient(loaded);
+    loaded = await DB.loadPatient('rev-test-1');
+    assertEqual(loaded._rev, 3, '17.3 第二次编辑后 _rev=3');
+
+    // 第三次编辑
+    loaded.name = '编辑测试修改';
+    await DB.savePatient(loaded);
+    loaded = await DB.loadPatient('rev-test-1');
+    assertEqual(loaded._rev, 4, '17.4 第三次编辑后 _rev=4');
+
+    // 同步队列应去重为1条
+    const queue = await DB.getSyncQueue();
+    const forEntity = queue.filter(q => q.entityId === 'rev-test-1');
+    assertEqual(forEntity.length, 1, '17.5 多次编辑同步队列仍为1条');
+    assertEqual(forEntity[0].action, 'create', '17.6 保留原始 create 动作');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('18. 附件上传失败重试追踪', async () => {
+    await DB.open();
+    mockDB.store('attachment_queue').clear();
+
+    // 添加附件到队列
+    const att = {
+      id: 'att-retry-1', visitId: 'v1', attachmentId: 'att-retry-1',
+      data: 'data:image/jpeg;base64,test', thumbnail: 'thumb',
+      name: 'retry.jpg', compressionState: 'compressed', status: 'pending', retryCount: 0
+    };
+    await DB.addToAttachmentQueue(att);
+
+    // 模拟第一次上传失败
+    await DB.updateAttachmentQueueItem('att-retry-1', {
+      status: 'pending', retryCount: 1, lastError: '网络超时'
+    });
+    let item = (await DB.getAttachmentQueue()).find(i => i.id === 'att-retry-1');
+    assertEqual(item.retryCount, 1, '18.1 第一次失败后 retryCount=1');
+    assertEqual(item.lastError, '网络超时', '18.2 记录错误信息');
+
+    // 模拟第二次失败
+    await DB.updateAttachmentQueueItem('att-retry-1', {
+      status: 'pending', retryCount: 2, lastError: '连接被拒'
+    });
+    item = (await DB.getAttachmentQueue()).find(i => i.id === 'att-retry-1');
+    assertEqual(item.retryCount, 2, '18.3 第二次失败后 retryCount=2');
+
+    // 模拟第三次失败 → 标记为 failed
+    await DB.updateAttachmentQueueItem('att-retry-1', {
+      status: 'failed', retryCount: 3, lastError: '超过最大重试次数'
+    });
+    item = (await DB.getAttachmentQueue()).find(i => i.id === 'att-retry-1');
+    assertEqual(item.status, 'failed', '18.4 超过最大重试后状态为 failed');
+    assertEqual(item.retryCount, 3, '18.5 retryCount=3');
+
+    // 手动重试：重置状态
+    await DB.updateAttachmentQueueItem('att-retry-1', {
+      status: 'pending', retryCount: 0, lastError: null
+    });
+    item = (await DB.getAttachmentQueue()).find(i => i.id === 'att-retry-1');
+    assertEqual(item.status, 'pending', '18.6 手动重置后状态为 pending');
+    assertEqual(item.retryCount, 0, '18.7 手动重置后 retryCount=0');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('19. 提醒重排验证', async () => {
+    // 风险等级变化后间隔重新计算
+    const visitDate = '2026-06-01';
+
+    const lowDate = getNextVisitDate({ diseases: [], riskLevel: 'low' }, 'low', visitDate);
+    assertEqual(lowDate, '2026-07-01', '19.1 低风险=30天后');
+
+    const highDate = getNextVisitDate({ diseases: [], riskLevel: 'high' }, 'high', visitDate);
+    assertEqual(highDate, '2026-06-08', '19.2 高风险=7天后');
+
+    // 疾病特殊间隔
+    const tbDate = getNextVisitDate({ diseases: ['tuberculosis'], riskLevel: 'low' }, 'low', visitDate);
+    assertEqual(tbDate, '2026-06-08', '19.3 肺结核强制7天');
+
+    // 多疾病取最短
+    const multiDate = getNextVisitDate({ diseases: ['hypertension', 'copd'], riskLevel: 'low' }, 'low', visitDate);
+    assertEqual(multiDate, '2026-06-15', '19.4 高血压14天 < 慢阻肺30天');
+
+    // 幂等性
+    const d1 = getNextVisitDate({ diseases: ['diabetes'], riskLevel: 'medium' }, 'medium', visitDate);
+    const d2 = getNextVisitDate({ diseases: ['diabetes'], riskLevel: 'medium' }, 'medium', visitDate);
+    assertEqual(d1, d2, '19.5 幂等性：多次调用结果一致');
+
+    // 风险升级后重新计算
+    const beforeUpgrade = getNextVisitDate({ diseases: [], riskLevel: 'low' }, 'low', visitDate);
+    const afterUpgrade = getNextVisitDate({ diseases: [], riskLevel: 'high' }, 'high', visitDate);
+    assert(beforeUpgrade !== afterUpgrade, '19.6 风险升级后日期变化');
   });
 
   // ─────────────────────────────────────────────

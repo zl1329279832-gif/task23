@@ -20,6 +20,35 @@ const QuestionnaireConfigView = (() => {
           <span class="label">${pinSet ? '修改 PIN 码' : '设置 PIN 码'}</span>
           <svg width="20" height="20" viewBox="0 0 24 24"><path fill="var(--text-hint)" d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
         </div>
+        <div class="settings-item" id="btn-switch-pin">
+          <div>
+            <span class="label">PIN 快速切换</span>
+            <div style="font-size:12px;color:var(--text-hint);margin-top:2px">临时锁定并切换到不同 PIN 配置</div>
+          </div>
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="var(--text-hint)" d="M12 6V1.5l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+        </div>
+        <div class="settings-item" id="btn-auto-lock">
+          <span class="label">自动锁定</span>
+          <span class="value" id="auto-lock-value">${await DB.getSetting('autoLockMinutes') || '5'} 分钟</span>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="group-title">随访计划</div>
+        <div class="settings-item" id="btn-manage-plans">
+          <div>
+            <span class="label">管理随访计划</span>
+            <div style="font-size:12px;color:var(--text-hint);margin-top:2px">查看和刷新分层随访计划</div>
+          </div>
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="var(--text-hint)" d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+        </div>
+        <div class="settings-item" id="btn-risk-rules">
+          <div>
+            <span class="label">风险分层规则</span>
+            <div style="font-size:12px;color:var(--text-hint);margin-top:2px">配置随访间隔和触发条件</div>
+          </div>
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="var(--text-hint)" d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+        </div>
       </div>
 
       <div class="settings-group">
@@ -131,6 +160,76 @@ const QuestionnaireConfigView = (() => {
       }
       Utils.showToast('PIN 码已更新', 'success');
       render();
+    });
+
+    // PIN 快速切换 - 验证当前 PIN 后设置临时 PIN
+    document.getElementById('btn-switch-pin').addEventListener('click', async () => {
+      const pinSet = await DB.getSetting('pin_verify');
+      if (!pinSet) {
+        Utils.showToast('请先设置 PIN 码', 'warning');
+        return;
+      }
+
+      const currentPin = await _showPinInput('输入当前 PIN 码验证');
+      if (currentPin === null) return;
+      const valid = await CryptoManager.verifyPin(currentPin);
+      if (!valid) {
+        Utils.showToast('当前 PIN 码不正确', 'error');
+        return;
+      }
+
+      // 保存当前 PIN 作为主 PIN
+      await DB.setSetting('primary_pin_backup', currentPin);
+
+      const tempPin = await _showPinInput('设置临时 PIN 码 (4-6位)');
+      if (tempPin === null) return;
+      if (tempPin.length < 4 || tempPin.length > 6 || !/^\d+$/.test(tempPin)) {
+        Utils.showToast('PIN 码需为 4-6 位数字', 'error');
+        return;
+      }
+
+      await CryptoManager.changePin(currentPin, tempPin);
+      await DB.setSetting('pin_switched', true);
+      Utils.showToast('已切换到临时 PIN，重启后生效', 'success');
+      render();
+    });
+
+    // 自动锁定时间
+    document.getElementById('btn-auto-lock').addEventListener('click', async () => {
+      const current = await DB.getSetting('autoLockMinutes') || '5';
+      const content = document.createElement('div');
+      content.innerHTML = `
+        <div class="form-group">
+          <label class="form-label">自动锁定时间（分钟）</label>
+          <select class="form-select" id="auto-lock-select">
+            <option value="1" ${current === '1' ? 'selected' : ''}>1 分钟</option>
+            <option value="5" ${current === '5' ? 'selected' : ''}>5 分钟</option>
+            <option value="10" ${current === '10' ? 'selected' : ''}>10 分钟</option>
+            <option value="30" ${current === '30' ? 'selected' : ''}>30 分钟</option>
+            <option value="60" ${current === '60' ? 'selected' : ''}>60 分钟</option>
+          </select>
+        </div>
+      `;
+      const result = await Utils.showModal('自动锁定', content, [
+        { label: '取消', value: false },
+        { label: '保存', value: true, primary: true }
+      ]);
+      if (result) {
+        const minutes = document.getElementById('auto-lock-select').value;
+        await DB.setSetting('autoLockMinutes', minutes);
+        const label = document.getElementById('auto-lock-value');
+        if (label) label.textContent = minutes + ' 分钟';
+      }
+    });
+
+    // 管理计划
+    document.getElementById('btn-manage-plans').addEventListener('click', () => {
+      App.navigate('followup-plan');
+    });
+
+    // 风险规则
+    document.getElementById('btn-risk-rules').addEventListener('click', () => {
+      App.navigate('risk-config');
     });
 
     // Import templates

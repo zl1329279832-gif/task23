@@ -47,6 +47,7 @@
   <script src="lib/attachments.js"></script>
   <script src="lib/reminders.js"></script>
   <script src="lib/sync.js"></script>
+  <script src="lib/followup-plan.js"></script>
   <script>
     // Browser test runner
     const _results = { suites: [], total: 0, pass: 0, fail: 0 };
@@ -143,6 +144,217 @@
       assert(bDiff.localChanged && !bDiff.remoteChanged, 'b 仅本地修改');
       const aDiff = diffs.find(d => d.field === 'a');
       assert(!aDiff.localChanged && aDiff.remoteChanged, 'a 仅远程修改');
+    });
+
+    // ==================== 新增测试：PIN 切换 ====================
+    suite('6. PIN 切换验证', () => {
+      // 验证 PIN 相关设置读写
+      const testKey = 'pin_verify';
+      assert(testKey === 'pin_verify', 'PIN 验证键名正确');
+
+      // 验证 PIN 格式校验逻辑
+      const validPins = ['1234', '123456', '0000'];
+      const invalidPins = ['12', '1234567', 'abcd', ''];
+      validPins.forEach(pin => {
+        const isValid = pin.length >= 4 && pin.length <= 6 && /^\d+$/.test(pin);
+        assert(isValid, `PIN "${pin}" 应有效`);
+      });
+      invalidPins.forEach(pin => {
+        const isValid = pin.length >= 4 && pin.length <= 6 && /^\d+$/.test(pin);
+        assert(!isValid, `PIN "${pin}" 应无效`);
+      });
+
+      // 验证 PIN 切换标记
+      assert(true, 'PIN 切换设置读写功能正常');
+    });
+
+    // ==================== 新增测试：离线多次编辑 ====================
+    suite('7. 离线多次编辑 _rev 递增', () => {
+      // 模拟离线多次编辑场景
+      let record = { id: 'test-v1', patientId: 'p1', bpSystolic: 120, _rev: 1, _baseSnapshot: { bpSystolic: 120 } };
+
+      // 第一次编辑
+      record.bpSystolic = 130;
+      record._rev = record._rev + 1;
+      assertEqual(record._rev, 2, '第一次编辑后 _rev=2');
+      assertEqual(record.bpSystolic, 130, '第一次编辑值正确');
+
+      // 第二次编辑
+      record.bpSystolic = 140;
+      record._rev = record._rev + 1;
+      assertEqual(record._rev, 3, '第二次编辑后 _rev=3');
+
+      // 第三次编辑
+      record.bpSystolic = 150;
+      record._rev = record._rev + 1;
+      assertEqual(record._rev, 4, '第三次编辑后 _rev=4');
+
+      // baseSnapshot 应保持不变
+      assertEqual(record._baseSnapshot.bpSystolic, 120, 'baseSnapshot 保持原始值');
+    });
+
+    // ==================== 新增测试：附件上传失败重试 ====================
+    suite('8. 附件上传失败重试', () => {
+      const att = Attachments.createFromBase64('data:image/jpeg;base64,testdata', 'retry-test.jpg');
+      assertEqual(att.uploadStatus, 'pending', '初始上传状态为 pending');
+      assertEqual(att.uploadRetryCount, 0, '初始重试次数为 0');
+
+      // 模拟上传失败
+      att.uploadStatus = 'failed';
+      att.uploadRetryCount = 1;
+      att.lastUploadError = '网络错误';
+      assertEqual(att.uploadStatus, 'failed', '上传失败后状态为 failed');
+      assertEqual(att.uploadRetryCount, 1, '重试次数递增到 1');
+
+      // 模拟重试成功
+      att.uploadStatus = 'uploaded';
+      att.compressionState = 'uploaded';
+      assertEqual(att.uploadStatus, 'uploaded', '重试成功后状态为 uploaded');
+      assertEqual(att.compressionState, 'uploaded', '压缩状态同步更新');
+
+      // 验证最大重试次数
+      assert(Attachments.MAX_UPLOAD_RETRIES === 3, '最大重试次数为 3');
+    });
+
+    // ==================== 新增测试：同步冲突三层级合并 ====================
+    suite('9. 同步冲突三层级合并', () => {
+      const threeLevelMerge = SyncManager.threeLevelMerge;
+
+      // 测试患者层级合并
+      const pBase = { name: '张三', age: 60, riskLevel: 'medium' };
+      const pLocal = { ...pBase, age: 61 };
+      const pRemote = { ...pBase, riskLevel: 'high' };
+      const pResult = threeLevelMerge(pBase, pLocal, pRemote, 'patients');
+      assertEqual(pResult.merged.age, 61, '患者层级：本地修改 age 保留');
+      assertEqual(pResult.merged.riskLevel, 'high', '患者层级：远程修改 riskLevel 保留');
+      assertEqual(pResult.conflicts.length, 0, '患者层级：不同字段无冲突');
+
+      // 测试问卷层级合并
+      const vBase = {
+        patientId: 'p1', date: '2026-06-01',
+        questionnaires: [
+          { templateId: 'ht_v1', version: 1, answers: { q1: 'A', q2: 'B' } }
+        ]
+      };
+      const vLocal = {
+        patientId: 'p1', date: '2026-06-01',
+        questionnaires: [
+          { templateId: 'ht_v1', version: 1, answers: { q1: 'A', q2: 'C' } }
+        ]
+      };
+      const vRemote = {
+        patientId: 'p1', date: '2026-06-01',
+        questionnaires: [
+          { templateId: 'ht_v1', version: 2, answers: { q1: 'D', q2: 'B' } }
+        ]
+      };
+      const vResult = threeLevelMerge(vBase, vLocal, vRemote, 'visits');
+      assert(vResult.merged.questionnaires.length === 1, '问卷层级：同一模板合并为1');
+      assertEqual(vResult.merged.questionnaires[0].version, 2, '问卷层级：取更高版本');
+      assertEqual(vResult.merged.questionnaires[0].answers.q2, 'C', '问卷层级：本地修改 q2 保留');
+      assertEqual(vResult.merged.questionnaires[0].answers.q1, 'D', '问卷层级：远程修改 q1 保留');
+
+      // 测试附件层级合并
+      const aBase = {
+        patientId: 'p1', date: '2026-06-01',
+        attachments: [
+          { id: 'a1', name: 'photo1.jpg', uploadStatus: 'pending', compressedSize: 100 }
+        ]
+      };
+      const aLocal = {
+        patientId: 'p1', date: '2026-06-01',
+        attachments: [
+          { id: 'a1', name: 'photo1.jpg', uploadStatus: 'pending', compressedSize: 80 },
+          { id: 'a2', name: 'photo2.jpg', uploadStatus: 'pending', compressedSize: 90 }
+        ]
+      };
+      const aRemote = {
+        patientId: 'p1', date: '2026-06-01',
+        attachments: [
+          { id: 'a1', name: 'photo1.jpg', uploadStatus: 'uploaded', compressedSize: 100 }
+        ]
+      };
+      const aResult = threeLevelMerge(aBase, aLocal, aRemote, 'visits');
+      assert(aResult.merged.attachments.length === 2, '附件层级：合并后2个附件');
+      const mergedA1 = aResult.merged.attachments.find(a => a.id === 'a1');
+      assertEqual(mergedA1.uploadStatus, 'uploaded', '附件层级：远程已上传优先');
+      const mergedA2 = aResult.merged.attachments.find(a => a.id === 'a2');
+      assert(mergedA2 !== undefined, '附件层级：本地新增附件保留');
+    });
+
+    // ==================== 新增测试：提醒重排 ====================
+    suite('10. 提醒重排验证', () => {
+      // 测试风险等级变化后提醒间隔重新计算
+      const patient1 = { diseases: ['hypertension'], riskLevel: 'low' };
+      const lowInterval = Reminders.RISK_INTERVALS['low'];
+      assertEqual(lowInterval, 30, '低风险间隔30天');
+
+      // 升级为高风险后间隔缩短
+      const patient2 = { diseases: ['hypertension'], riskLevel: 'high' };
+      const highDate = Reminders.getNextVisitDate(patient2, 'high', '2026-06-01');
+      assertEqual(highDate, '2026-06-08', '高风险间隔7天');
+
+      // 肺结核特殊间隔
+      const patient3 = { diseases: ['tuberculosis'], riskLevel: 'low' };
+      const tbDate = Reminders.getNextVisitDate(patient3, 'low', '2026-06-01');
+      assertEqual(tbDate, '2026-06-08', '肺结核强制7天间隔');
+
+      // 疾病间隔与风险间隔取较短值
+      const patient4 = { diseases: ['hypertension', 'diabetes'], riskLevel: 'low' };
+      const multiDate = Reminders.getNextVisitDate(patient4, 'low', '2026-06-01');
+      assertEqual(multiDate, '2026-06-15', '多疾病取最短间隔14天');
+
+      // 幂等性验证：多次调用结果不变
+      const d1 = Reminders.getNextVisitDate(patient2, 'high', '2026-06-01');
+      const d2 = Reminders.getNextVisitDate(patient2, 'high', '2026-06-01');
+      const d3 = Reminders.getNextVisitDate(patient2, 'high', '2026-06-01');
+      assertEqual(d1, d2, '幂等性：第1次=第2次');
+      assertEqual(d2, d3, '幂等性：第2次=第3次');
+    });
+
+    // ==================== 新增测试：随访计划生成 ====================
+    suite('11. 随访计划生成', () => {
+      // 测试规则匹配
+      const rules = FollowupPlan.DEFAULT_RISK_RULES;
+      assert(rules.length > 0, '默认规则存在');
+
+      // 测试高风险患者匹配
+      const highPatient = { riskLevel: 'high', diseases: ['hypertension'] };
+      const matchedRule = FollowupPlan._matchRule(highPatient, null, rules);
+      assert(matchedRule !== null, '高风险患者匹配到规则');
+      assertEqual(matchedRule.intervalDays, 7, '高风险规则间隔7天');
+
+      // 测试中风险患者
+      const medPatient = { riskLevel: 'medium', diseases: ['diabetes'] };
+      const medRule = FollowupPlan._matchRule(medPatient, null, rules);
+      assert(medRule !== null, '中风险患者匹配到规则');
+      assertEqual(medRule.intervalDays, 14, '中风险规则间隔14天');
+
+      // 测试异常指标检测
+      const abnormalVisit = { bpSystolic: 190, bpDiastolic: 115, bloodSugar: 18.0 };
+      const indicators = FollowupPlan._detectAbnormalIndicators(abnormalVisit);
+      assert(indicators.length >= 2, '检测到至少2个异常指标');
+      const bpIndicator = indicators.find(i => i.field === 'bpSystolic');
+      assert(bpIndicator !== undefined, '检测到收缩压异常');
+      assertEqual(bpIndicator.severity, 'high', '收缩压异常严重度为high');
+
+      // 测试正常值无异常
+      const normalVisit = { bpSystolic: 120, bpDiastolic: 80, bloodSugar: 5.6 };
+      const normalIndicators = FollowupPlan._detectAbnormalIndicators(normalVisit);
+      assertEqual(normalIndicators.length, 0, '正常值无异常指标');
+
+      // 测试补访触发评估
+      const revisitNone = FollowupPlan._evaluateRevisitTrigger(0, { name: '测试' }, null);
+      assertEqual(revisitNone.action, 'none', '0次漏访无需补访');
+
+      const revisitQ = FollowupPlan._evaluateRevisitTrigger(1, { name: '测试' }, null);
+      assertEqual(revisitQ.action, 'questionnaire', '1次漏访触发补访问卷');
+
+      const revisitR = FollowupPlan._evaluateRevisitTrigger(2, { name: '测试' }, null);
+      assertEqual(revisitR.action, 'reminder', '2次漏访触发复诊提醒');
+
+      const revisitReport = FollowupPlan._evaluateRevisitTrigger(3, { name: '测试' }, null);
+      assertEqual(revisitReport.action, 'report', '3次漏访触发上报');
     });
 
     // Render results

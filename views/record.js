@@ -284,6 +284,14 @@ const RecordView = (() => {
         _patient.lastVisitDate = _visit.date;
         await DB.savePatient(_patient);
 
+        // 执行随访后处理：补访触发、异常上报、附件必传、生成下次计划
+        try {
+          const postActions = await FollowupPlan.processPostVisit(_visit, _patient);
+          await _showPostVisitActions(postActions);
+        } catch (e) {
+          console.warn('Post-visit processing failed:', e);
+        }
+
         Utils.showToast('随访记录已保存', 'success');
         App.navigate('detail', { patientId: _patient.id });
       } catch (err) {
@@ -383,6 +391,86 @@ const RecordView = (() => {
   }
   function _stopDraftAutosave() {
     if (_draftTimer) { clearInterval(_draftTimer); _draftTimer = null; }
+  }
+
+  /** 显示随访后处理结果 */
+  async function _showPostVisitActions(actions) {
+    if (!actions || actions.length === 0) return;
+
+    const alerts = [];
+    let hasReport = false;
+    let hasMissingAttachment = false;
+
+    for (const action of actions) {
+      switch (action.type) {
+        case 'abnormal_report':
+          hasReport = true;
+          alerts.push(`
+            <div class="action-alert alert-danger">
+              <svg width="18" height="18" viewBox="0 0 24 24" style="flex-shrink:0"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+              <div><strong>异常指标上报</strong><br>${action.indicators.map(i => `${i.label}: ${i.value}${i.unit}`).join('、')}</div>
+            </div>
+          `);
+          break;
+        case 'attachment_required':
+          hasMissingAttachment = true;
+          alerts.push(`
+            <div class="action-alert alert-warning">
+              <svg width="18" height="18" viewBox="0 0 24 24" style="flex-shrink:0"><path fill="currentColor" d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+              <div><strong>附件必传</strong><br>${action.message}</div>
+            </div>
+          `);
+          break;
+        case 'revisit_questionnaire':
+          alerts.push(`
+            <div class="action-alert alert-info">
+              <svg width="18" height="18" viewBox="0 0 24 24" style="flex-shrink:0"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+              <div><strong>补访问卷</strong><br>${action.message}</div>
+            </div>
+          `);
+          break;
+        case 'next_plan':
+          alerts.push(`
+            <div class="action-alert alert-success">
+              <svg width="18" height="18" viewBox="0 0 24 24" style="flex-shrink:0"><path fill="currentColor" d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>
+              <div><strong>下次随访</strong><br>${action.message}（${Utils.riskLabel(action.plan.riskLevel)}，间隔 ${action.plan.intervalDays} 天）</div>
+            </div>
+          `);
+          break;
+        case 'revisit_reminder':
+          alerts.push(`
+            <div class="action-alert alert-info">
+              <svg width="18" height="18" viewBox="0 0 24 24" style="flex-shrink:0"><path fill="currentColor" d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+              <div><strong>复诊提醒</strong><br>${action.message}</div>
+            </div>
+          `);
+          break;
+      }
+    }
+
+    if (alerts.length === 0) return;
+
+    const content = document.createElement('div');
+    content.innerHTML = alerts.join('');
+
+    const modalActions = [
+      { label: '知道了', value: 'ok', primary: true }
+    ];
+    if (hasReport) {
+      modalActions.unshift({ label: '上报并继续', value: 'report', primary: true });
+    }
+    if (hasMissingAttachment) {
+      modalActions.unshift({ label: '补充附件', value: 'attachment' });
+    }
+
+    const choice = await Utils.showModal('随访后处理', content, modalActions);
+
+    if (choice === 'report') {
+      Utils.showToast('异常指标已标记上报', 'success');
+    } else if (choice === 'attachment') {
+      // 回到编辑模式让用户补充附件
+      return;
+    }
   }
 
   return { render };

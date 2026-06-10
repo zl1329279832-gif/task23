@@ -18,6 +18,8 @@ const ExportView = (() => {
             <div>患者数量</div><div style="text-align:right;font-weight:600">${stats.patients || 0}</div>
             <div>随访记录</div><div style="text-align:right;font-weight:600">${stats.visits || 0}</div>
             <div>问卷模板</div><div style="text-align:right;font-weight:600">${stats.questionnaire_templates || 0}</div>
+            <div>随访计划</div><div style="text-align:right;font-weight:600">${stats.followup_plans || 0}</div>
+            <div>风险规则</div><div style="text-align:right;font-weight:600">${stats.risk_config || 0}</div>
             <div>待同步</div><div style="text-align:right;font-weight:600">${stats.sync_queue || 0}</div>
             <div>冲突记录</div><div style="text-align:right;font-weight:600">${stats.sync_conflicts || 0}</div>
           </div>
@@ -53,6 +55,16 @@ const ExportView = (() => {
           <div class="info">
             <div class="title">仅导出未同步记录</div>
             <div class="desc">${stats.sync_queue || 0} 条待同步数据</div>
+          </div>
+        </div>
+
+        <div class="export-option" id="btn-export-audit">
+          <div class="icon" style="background:#ede7f6">
+            <svg width="24" height="24" viewBox="0 0 24 24"><path fill="#7b1fa2" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+          </div>
+          <div class="info">
+            <div class="title">导出审计包</div>
+            <div class="desc">含随访计划、风险规则、患者风险画像和操作日志</div>
           </div>
         </div>
 
@@ -105,7 +117,9 @@ const ExportView = (() => {
           const db = await DB.open();
           return DB.getAll(db, 'visits');
         })(),
-        templates: await DB.getAllTemplates()
+        templates: await DB.getAllTemplates(),
+        followupPlans: await DB.getAllPlans(),
+        riskConfig: await DB.getRiskConfig()
       };
       // Remove internal encrypted fields from export
       if (data.patients) {
@@ -191,6 +205,35 @@ const ExportView = (() => {
         'application/json'
       );
       Utils.showToast('导出成功', 'success');
+    });
+
+    // Export audit package
+    document.getElementById('btn-export-audit').addEventListener('click', async () => {
+      Utils.showToast('正在生成审计包...', 'info');
+      try {
+        const auditData = await FollowupPlan.exportAuditData();
+
+        // 附加同步日志和冲突历史
+        const db = await DB.open();
+        auditData.syncLog = {
+          queue: await DB.getSyncQueue(),
+          conflicts: await DB.getAll(db, 'sync_conflicts'),
+          lastSyncTime: await DB.getSetting('lastSyncTime')
+        };
+
+        // 附加附件队列状态
+        auditData.attachmentQueue = await DB.getAttachmentQueue();
+
+        const json = JSON.stringify(auditData, null, 2);
+        Utils.downloadFile(
+          json,
+          `审计包_${Utils.today()}.json`,
+          'application/json'
+        );
+        Utils.showToast('审计包导出成功', 'success');
+      } catch (err) {
+        Utils.showToast('审计包导出失败: ' + err.message, 'error');
+      }
     });
 
     // Clear synced data
@@ -279,7 +322,7 @@ const ExportView = (() => {
       if (!confirm2) return;
 
       const db = await DB.open();
-      for (const store of ['patients', 'visits', 'sync_queue', 'sync_conflicts', 'settings']) {
+      for (const store of ['patients', 'visits', 'sync_queue', 'sync_conflicts', 'settings', 'followup_plans', 'risk_config', 'attachment_queue']) {
         await DB.clear(db, store);
       }
       Utils.showToast('所有数据已清空', 'success');

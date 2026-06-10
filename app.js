@@ -13,7 +13,9 @@ const App = (() => {
     'sync-review': SyncReviewView,
     'conflict': ConflictView,
     'export': ExportView,
-    'questionnaire-config': QuestionnaireConfigView
+    'questionnaire-config': QuestionnaireConfigView,
+    'followup-plan': FollowupPlanView,
+    'risk-config': RiskConfigView
   };
 
   // --- 初始化 ---
@@ -256,6 +258,11 @@ const App = (() => {
 
     // Start sync
     SyncManager.startAutoSync();
+
+    // Generate/update follow-up plans
+    try {
+      await FollowupPlan.generateAllPlans();
+    } catch (e) { console.warn('Plan generation failed:', e); }
 
     // Show reminders
     await Reminders.showReminderBanner();
