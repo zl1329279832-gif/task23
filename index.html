@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a73e8">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="基层医疗随访离线采集系统">
+  <title>基层随访系统</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/variables.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/views.css">
+  <link rel="stylesheet" href="css/conflict.css">
+</head>
+<body>
+  <div class="app-shell" id="app">
+    <header class="app-header">
+      <button class="app-header__back hidden" id="header-back" aria-label="返回">&#8592;</button>
+      <h1 class="app-header__title" id="header-title">基层随访系统</h1>
+      <div class="app-header__actions" id="header-actions">
+        <div id="offline-indicator"></div>
+      </div>
+    </header>
+
+    <main class="app-main" id="main-content"></main>
+
+    <nav class="app-nav" id="app-nav">
+      <button class="app-nav__item" data-route="/patients">
+        <span class="app-nav__item__icon">&#128101;</span>
+        <span>患者</span>
+      </button>
+      <button class="app-nav__item" data-route="/reminders">
+        <span class="app-nav__item__icon">&#128276;</span>
+        <span>提醒</span>
+      </button>
+      <button class="app-nav__item" data-route="/sync">
+        <span class="app-nav__item__icon">&#128259;</span>
+        <span>同步</span>
+      </button>
+      <button class="app-nav__item" data-route="/export">
+        <span class="app-nav__item__icon">&#9881;</span>
+        <span>管理</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="toast-container" style="position:fixed;top:calc(var(--header-h) + 8px);left:50%;transform:translateX(-50%);z-index:var(--z-toast);display:flex;flex-direction:column;gap:8px;pointer-events:none;width:90%;max-width:400px;"></div>
+  <div id="modal-container"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

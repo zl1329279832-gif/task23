@@ -1,0 +1,97 @@
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-header {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: var(--header-h);
+  background: var(--bg-header);
+  color: var(--text-light);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--spacing-md);
+  z-index: var(--z-header);
+  box-shadow: var(--shadow-md);
+}
+
+.app-header__back {
+  width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  margin-right: var(--spacing-sm);
+  font-size: 20px;
+  color: var(--text-light);
+  background: none;
+}
+.app-header__back:active { background: rgba(255,255,255,0.2); }
+.app-header__back.hidden { display: none; }
+
+.app-header__title {
+  flex: 1;
+  font-size: var(--font-lg);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.app-main {
+  flex: 1;
+  margin-top: var(--header-h);
+  margin-bottom: var(--nav-h);
+  padding: var(--spacing-md);
+  max-width: 600px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.app-nav {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  height: var(--nav-h);
+  background: var(--bg-nav);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  border-top: 1px solid var(--border);
+  z-index: var(--z-nav);
+}
+
+.app-nav__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  height: 100%;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--font-xs);
+  gap: 2px;
+  background: none;
+  border: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.app-nav__item.active { color: var(--primary); }
+.app-nav__item__icon { font-size: 22px; line-height: 1; }
+
+.app-nav__badge {
+  position: absolute;
+  top: 4px; right: calc(50% - 18px);
+  min-width: 16px; height: 16px;
+  background: var(--danger);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 10px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 4px;
+}

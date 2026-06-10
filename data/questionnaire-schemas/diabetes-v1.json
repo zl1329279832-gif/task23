@@ -1,0 +1,275 @@
+{
+  "id": "diabetes-v1",
+  "diseaseType": "diabetes",
+  "version": 1,
+  "title": "糖尿病随访问卷",
+  "description": "基层医疗机构糖尿病患者随访评估表",
+  "sections": [
+    {
+      "id": "glucose_control",
+      "title": "血糖控制",
+      "questions": [
+        {
+          "field": "glucose_monitoring",
+          "label": "血糖监测频率",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "daily", "label": "每日监测" },
+            { "value": "weekly", "label": "每周监测" },
+            { "value": "monthly", "label": "每月监测" },
+            { "value": "rarely", "label": "很少监测" },
+            { "value": "never", "label": "从不监测" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "hypoglycemia_episodes",
+          "label": "近1个月低血糖发作次数",
+          "type": "number",
+          "min": 0,
+          "max": 30,
+          "unit": "次",
+          "required": true,
+          "showWhen": null
+        },
+        {
+          "field": "hypoglycemia_severity",
+          "label": "低血糖严重程度",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "mild", "label": "轻度（可自行处理）" },
+            { "value": "moderate", "label": "中度（需他人协助）" },
+            { "value": "severe", "label": "重度（需就医处理）" }
+          ],
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "hypoglycemia_episodes", "op": "gt", "value": 0 }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "medication",
+      "title": "用药情况",
+      "questions": [
+        {
+          "field": "medication_type",
+          "label": "目前使用的降糖药物",
+          "type": "multi_choice",
+          "required": true,
+          "options": [
+            { "value": "metformin", "label": "二甲双胍" },
+            { "value": "sulfonylurea", "label": "磺脲类" },
+            { "value": "alpha_glucosidase", "label": "α-糖苷酶抑制剂" },
+            { "value": "dpp4", "label": "DPP-4抑制剂" },
+            { "value": "sglt2", "label": "SGLT2抑制剂" },
+            { "value": "glp1", "label": "GLP-1受体激动剂" },
+            { "value": "thiazolidinedione", "label": "噻唑烷二酮类" },
+            { "value": "other", "label": "其他" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "insulin_use",
+          "label": "是否使用胰岛素",
+          "type": "boolean",
+          "required": true,
+          "showWhen": null
+        },
+        {
+          "field": "insulin_dose",
+          "label": "每日胰岛素用量",
+          "type": "number",
+          "min": 0,
+          "max": 200,
+          "unit": "IU/天",
+          "required": false,
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "insulin_use", "op": "eq", "value": true }
+            ]
+          }
+        },
+        {
+          "field": "medication_adherence",
+          "label": "服药依从性",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "regular", "label": "规律服药" },
+            { "value": "mostly", "label": "基本规律（偶尔漏服）" },
+            { "value": "rarely", "label": "不规律服药" },
+            { "value": "stopped", "label": "已停药" }
+          ],
+          "showWhen": null
+        }
+      ]
+    },
+    {
+      "id": "complications",
+      "title": "并发症筛查",
+      "questions": [
+        {
+          "field": "vision_changes",
+          "label": "近期是否有视力变化",
+          "type": "boolean",
+          "required": true,
+          "showWhen": null
+        },
+        {
+          "field": "foot_problems",
+          "label": "是否有足部问题（溃疡、感染、麻木等）",
+          "type": "boolean",
+          "required": true,
+          "showWhen": null
+        },
+        {
+          "field": "foot_exam_details",
+          "label": "足部问题描述",
+          "type": "text",
+          "placeholder": "请描述足部问题的具体情况",
+          "required": false,
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "foot_problems", "op": "eq", "value": true }
+            ]
+          }
+        },
+        {
+          "field": "numbness",
+          "label": "是否有肢体麻木感",
+          "type": "boolean",
+          "required": true,
+          "showWhen": null
+        }
+      ]
+    },
+    {
+      "id": "lifestyle",
+      "title": "生活方式",
+      "questions": [
+        {
+          "field": "diet_control",
+          "label": "饮食控制情况",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "strict", "label": "严格控制" },
+            { "value": "moderate", "label": "基本控制" },
+            { "value": "poor", "label": "控制不佳" },
+            { "value": "none", "label": "未控制" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "exercise_frequency",
+          "label": "每周运动次数",
+          "type": "number",
+          "min": 0,
+          "max": 14,
+          "unit": "次/周",
+          "required": true,
+          "showWhen": null
+        },
+        {
+          "field": "weight_change",
+          "label": "近3个月体重变化",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "decreased", "label": "减轻" },
+            { "value": "stable", "label": "稳定" },
+            { "value": "increased", "label": "增加" },
+            { "value": "unknown", "label": "不清楚" }
+          ],
+          "showWhen": null
+        }
+      ]
+    }
+  ],
+  "computedFields": [
+    {
+      "id": "risk_score",
+      "label": "风险评分",
+      "formula": {
+        "base": 0,
+        "min": 0,
+        "max": 100,
+        "rules": [
+          {
+            "field": "glucose_monitoring",
+            "type": "map",
+            "scores": {
+              "daily": 0,
+              "weekly": 3,
+              "monthly": 8,
+              "rarely": 15,
+              "never": 20
+            }
+          },
+          {
+            "field": "hypoglycemia_episodes",
+            "type": "range",
+            "ranges": [
+              { "min": 0, "max": 0, "score": 0 },
+              { "min": 1, "max": 2, "score": 10 },
+              { "min": 3, "max": 5, "score": 20 },
+              { "min": 6, "score": 30 }
+            ]
+          },
+          {
+            "field": "medication_adherence",
+            "type": "map",
+            "scores": {
+              "regular": 0,
+              "mostly": 5,
+              "rarely": 15,
+              "stopped": 20
+            }
+          },
+          {
+            "field": "vision_changes",
+            "type": "boolean",
+            "score": 10
+          },
+          {
+            "field": "foot_problems",
+            "type": "boolean",
+            "score": 10
+          },
+          {
+            "field": "numbness",
+            "type": "boolean",
+            "score": 8
+          },
+          {
+            "field": "diet_control",
+            "type": "map",
+            "scores": {
+              "strict": 0,
+              "moderate": 3,
+              "poor": 10,
+              "none": 15
+            }
+          },
+          {
+            "field": "exercise_frequency",
+            "type": "range",
+            "ranges": [
+              { "min": 5, "score": 0 },
+              { "min": 3, "max": 4, "score": 3 },
+              { "min": 1, "max": 2, "score": 5 },
+              { "min": 0, "max": 0, "score": 8 }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

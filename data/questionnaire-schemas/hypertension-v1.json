@@ -1,0 +1,294 @@
+{
+  "id": "hypertension-v1",
+  "diseaseType": "hypertension",
+  "version": 1,
+  "title": "高血压随访问卷",
+  "description": "基层医疗机构高血压患者随访评估表",
+  "sections": [
+    {
+      "id": "symptoms",
+      "title": "症状评估",
+      "questions": [
+        {
+          "field": "headache_frequency",
+          "label": "头痛频率",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "none", "label": "无" },
+            { "value": "occasional", "label": "偶尔（每月少于3次）" },
+            { "value": "frequent", "label": "频繁（每周1-3次）" },
+            { "value": "daily", "label": "每日发作" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "headache_severity",
+          "label": "头痛程度",
+          "type": "scale",
+          "min": 1,
+          "max": 10,
+          "minLabel": "轻微",
+          "maxLabel": "剧烈",
+          "required": false,
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "headache_frequency", "op": "neq", "value": "none" }
+            ]
+          }
+        },
+        {
+          "field": "dizziness",
+          "label": "头晕情况",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "none", "label": "无" },
+            { "value": "occasional", "label": "偶尔" },
+            { "value": "frequent", "label": "频繁" },
+            { "value": "persistent", "label": "持续" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "chest_pain",
+          "label": "是否有胸痛",
+          "type": "boolean",
+          "required": true,
+          "showWhen": null
+        }
+      ]
+    },
+    {
+      "id": "medication",
+      "title": "用药情况",
+      "questions": [
+        {
+          "field": "medication_adherence",
+          "label": "服药依从性",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "regular", "label": "规律服药" },
+            { "value": "mostly", "label": "基本规律（偶尔漏服）" },
+            { "value": "rarely", "label": "不规律服药" },
+            { "value": "stopped", "label": "已停药" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "stop_reason",
+          "label": "停药/不规律原因",
+          "type": "multi_choice",
+          "required": false,
+          "options": [
+            { "value": "feel_better", "label": "自觉症状好转" },
+            { "value": "side_effects", "label": "药物副作用" },
+            { "value": "forget", "label": "经常忘记" },
+            { "value": "cost", "label": "经济原因" },
+            { "value": "distrust", "label": "不信任药物疗效" },
+            { "value": "other", "label": "其他" }
+          ],
+          "showWhen": {
+            "operator": "OR",
+            "conditions": [
+              { "field": "medication_adherence", "op": "eq", "value": "stopped" },
+              { "field": "medication_adherence", "op": "eq", "value": "rarely" }
+            ]
+          }
+        },
+        {
+          "field": "side_effects",
+          "label": "药物副作用描述",
+          "type": "text",
+          "placeholder": "请描述出现的副作用症状",
+          "required": false,
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "stop_reason", "op": "contains", "value": "side_effects" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "lifestyle",
+      "title": "生活方式",
+      "questions": [
+        {
+          "field": "salt_intake",
+          "label": "每日盐摄入",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "low", "label": "低盐（<6g/天）" },
+            { "value": "moderate", "label": "中等（6-10g/天）" },
+            { "value": "high", "label": "偏高（>10g/天）" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "exercise_frequency",
+          "label": "每周运动次数",
+          "type": "number",
+          "min": 0,
+          "max": 14,
+          "unit": "次/周",
+          "required": true,
+          "showWhen": null
+        },
+        {
+          "field": "smoking",
+          "label": "吸烟情况",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "never", "label": "从不吸烟" },
+            { "value": "quit", "label": "已戒烟" },
+            { "value": "occasional", "label": "偶尔吸烟" },
+            { "value": "daily", "label": "每日吸烟" }
+          ],
+          "showWhen": null
+        },
+        {
+          "field": "drinking",
+          "label": "饮酒情况",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "never", "label": "从不饮酒" },
+            { "value": "quit", "label": "已戒酒" },
+            { "value": "occasional", "label": "偶尔饮酒" },
+            { "value": "frequent", "label": "经常饮酒" }
+          ],
+          "showWhen": null
+        }
+      ]
+    },
+    {
+      "id": "elderly",
+      "title": "老年评估",
+      "questions": [
+        {
+          "field": "fall_risk",
+          "label": "近3个月是否有跌倒",
+          "type": "boolean",
+          "required": true,
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "$patient.age", "op": "gte", "value": 65 }
+            ]
+          }
+        },
+        {
+          "field": "cognitive_status",
+          "label": "认知功能状态",
+          "type": "single_choice",
+          "required": true,
+          "options": [
+            { "value": "normal", "label": "正常" },
+            { "value": "mild_decline", "label": "轻度下降" },
+            { "value": "moderate_decline", "label": "中度下降" },
+            { "value": "severe_decline", "label": "重度下降" }
+          ],
+          "showWhen": {
+            "operator": "AND",
+            "conditions": [
+              { "field": "$patient.age", "op": "gte", "value": 65 }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "computedFields": [
+    {
+      "id": "risk_score",
+      "label": "风险评分",
+      "formula": {
+        "base": 0,
+        "min": 0,
+        "max": 100,
+        "rules": [
+          {
+            "field": "headache_frequency",
+            "type": "map",
+            "scores": {
+              "none": 0,
+              "occasional": 5,
+              "frequent": 15,
+              "daily": 25
+            }
+          },
+          {
+            "field": "dizziness",
+            "type": "map",
+            "scores": {
+              "none": 0,
+              "occasional": 5,
+              "frequent": 15,
+              "persistent": 25
+            }
+          },
+          {
+            "field": "chest_pain",
+            "type": "boolean",
+            "score": 20
+          },
+          {
+            "field": "medication_adherence",
+            "type": "map",
+            "scores": {
+              "regular": 0,
+              "mostly": 5,
+              "rarely": 15,
+              "stopped": 20
+            }
+          },
+          {
+            "field": "salt_intake",
+            "type": "map",
+            "scores": {
+              "low": 0,
+              "moderate": 5,
+              "high": 10
+            }
+          },
+          {
+            "field": "smoking",
+            "type": "map",
+            "scores": {
+              "never": 0,
+              "quit": 0,
+              "occasional": 5,
+              "daily": 10
+            }
+          },
+          {
+            "field": "drinking",
+            "type": "map",
+            "scores": {
+              "never": 0,
+              "quit": 0,
+              "occasional": 3,
+              "frequent": 8
+            }
+          },
+          {
+            "field": "exercise_frequency",
+            "type": "range",
+            "ranges": [
+              { "min": 5, "score": 0 },
+              { "min": 3, "max": 4, "score": 3 },
+              { "min": 1, "max": 2, "score": 5 },
+              { "min": 0, "max": 0, "score": 10 }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

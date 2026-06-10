@@ -1,0 +1,96 @@
+.conflict-view { padding: var(--spacing-md) 0; }
+
+.conflict-header {
+  display: flex; align-items: center; gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+.conflict-header__icon { font-size: 32px; color: var(--warning); }
+.conflict-header__text h2 { margin-bottom: var(--spacing-xs); }
+.conflict-header__text p { font-size: var(--font-sm); color: var(--text-secondary); }
+
+.conflict-field {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--spacing-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.conflict-field__name {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-disabled);
+  font-weight: 600; font-size: var(--font-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.conflict-field__values {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+}
+
+.conflict-field__value {
+  padding: var(--spacing-md);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.conflict-field__value:active { background: var(--primary-light); }
+.conflict-field__value.selected {
+  background: var(--primary-light);
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.conflict-field__value-label {
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-xs);
+  text-transform: uppercase;
+}
+
+.conflict-field__value-content {
+  font-size: var(--font-sm);
+  word-break: break-all;
+}
+
+.conflict-field__merge {
+  padding: var(--spacing-md);
+  border-top: 1px solid var(--border);
+}
+.conflict-field__merge-label {
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--primary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.conflict-actions {
+  display: flex; gap: var(--spacing-md);
+  padding: var(--spacing-md) 0;
+  position: sticky; bottom: var(--nav-h);
+  background: var(--bg);
+}
+
+.conflict-summary {
+  padding: var(--spacing-md);
+  background: var(--primary-light);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+  font-size: var(--font-sm);
+}
+.conflict-summary__item {
+  display: flex; justify-content: space-between;
+  padding: var(--spacing-xs) 0;
+}
+
+.auto-resolved {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: #e6f4ea;
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+  font-size: var(--font-sm);
+  color: var(--success);
+}

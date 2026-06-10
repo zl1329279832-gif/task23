@@ -1,0 +1,5 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'>
+  <rect width='512' height='512' rx='76.8' fill='#1a73e8'/>
+  <text x='50%' y='38%' text-anchor='middle' dominant-baseline='central' fill='white' font-family='Arial' font-size='179.2' font-weight='bold'>+</text>
+  <text x='50%' y='68%' text-anchor='middle' dominant-baseline='central' fill='white' font-family='Arial' font-size='76.8' font-weight='bold'>随访</text>
+</svg>
