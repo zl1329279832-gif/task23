@@ -173,8 +173,8 @@ const RecordView = (() => {
   }
 
   function _getNextVisitHint() {
-    const nextDate = Reminders.getNextVisitDate(_patient, _visit.riskLevel);
-    const days = Utils.daysBetween(Utils.today(), nextDate);
+    const nextDate = Reminders.getNextVisitDate(_patient, _visit.riskLevel, _visit.date);
+    const days = Utils.daysBetween(_visit.date || Utils.today(), nextDate);
     return `建议 ${Utils.formatDate(nextDate)} 复诊（${days}天后）`;
   }
 

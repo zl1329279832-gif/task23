@@ -1,5 +1,5 @@
 // Service Worker - 医疗随访离线采集系统
-const CACHE_NAME = 'medical-followup-v1';
+const CACHE_NAME = 'medical-followup-v2';
 const STATIC_ASSETS = [
   '/index.html',
   '/app.js',

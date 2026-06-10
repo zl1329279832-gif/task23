@@ -1,0 +1,12 @@
+{
+  "name": "medical-followup-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "医疗随访 PWA 离线同步冲突测试",
+  "scripts": {
+    "test": "node test-runner.js"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^5.0.0"
+  }
+}

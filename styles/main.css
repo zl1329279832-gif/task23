@@ -531,6 +531,16 @@ input, select, textarea { font: inherit; color: inherit; }
   display: block;
   margin-bottom: 2px;
 }
+.conflict-field.conflict-real {
+  border-left: 3px solid var(--danger);
+}
+.conflict-field.conflict-auto {
+  border-left: 3px solid var(--success);
+  opacity: 0.85;
+}
+.conflict-field.conflict-auto .conflict-field-header {
+  background: var(--success-light);
+}
 
 /* --- Detail View --- */
 .detail-header {

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>医疗随访 PWA - 测试运行器</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      background: #1a1a2e; color: #eee; padding: 20px;
+      max-width: 800px; margin: 0 auto;
+    }
+    h1 { font-size: 20px; margin-bottom: 16px; color: #e94560; }
+    .suite { margin: 16px 0; border: 1px solid #333; border-radius: 8px; overflow: hidden; }
+    .suite-title {
+      background: #16213e; padding: 10px 14px; font-weight: 600; font-size: 14px;
+      border-bottom: 1px solid #333;
+    }
+    .test-line {
+      padding: 4px 14px; font-size: 13px; border-bottom: 1px solid #222;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .test-line:last-child { border-bottom: none; }
+    .pass { color: #4caf50; }
+    .fail { color: #e53935; background: rgba(229,57,53,0.1); }
+    .icon { flex-shrink: 0; width: 18px; text-align: center; }
+    .summary {
+      margin-top: 24px; padding: 16px; border-radius: 8px;
+      font-size: 16px; font-weight: 600; text-align: center;
+    }
+    .summary.all-pass { background: #1b5e20; color: #a5d6a7; }
+    .summary.has-fail { background: #b71c1c; color: #ef9a9a; }
+    .running { color: #ff9800; animation: blink 1s infinite; }
+    @keyframes blink { 50% { opacity: 0.5; } }
+  </style>
+</head>
+<body>
+  <h1>医疗随访 PWA 综合测试</h1>
+  <div id="output" class="running">测试运行中...</div>
+  <div id="summary"></div>
+
+  <script src="lib/utils.js"></script>
+  <script src="lib/db.js"></script>
+  <script src="lib/crypto.js"></script>
+  <script src="lib/questionnaire-engine.js"></script>
+  <script src="lib/attachments.js"></script>
+  <script src="lib/reminders.js"></script>
+  <script src="lib/sync.js"></script>
+  <script>
+    // Browser test runner
+    const _results = { suites: [], total: 0, pass: 0, fail: 0 };
+    let _currentSuite = null;
+
+    function suite(name, fn) {
+      _currentSuite = { name, tests: [] };
+      _results.suites.push(_currentSuite);
+      fn();
+    }
+
+    function assert(condition, message) {
+      _results.total++;
+      if (condition) {
+        _results.pass++;
+        _currentSuite.tests.push({ message, pass: true });
+      } else {
+        _results.fail++;
+        _currentSuite.tests.push({ message, pass: false });
+      }
+    }
+
+    function assertEqual(actual, expected, message) {
+      const pass = JSON.stringify(actual) === JSON.stringify(expected);
+      assert(pass, `${message}${pass ? '' : ` — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`}`);
+    }
+
+    // Three-way merge from SyncManager
+    const threeWayMerge = SyncManager.threeWayMerge;
+
+    // Run core tests in browser
+    suite('1. 三方合并基础算法', () => {
+      const base = { name: '张三', age: 60, phone: '13800000001' };
+      const r1 = threeWayMerge(base, {...base}, {...base});
+      assertEqual(r1.conflicts.length, 0, '无修改无冲突');
+
+      const r2 = threeWayMerge(base, {...base, phone: '139'}, {...base});
+      assertEqual(r2.merged.phone, '139', '仅本地修改取本地');
+
+      const r3 = threeWayMerge(base, {...base}, {...base, age: 61});
+      assertEqual(r3.merged.age, 61, '仅远程修改取远程');
+
+      const r4 = threeWayMerge(base, {...base, phone: 'A'}, {...base, phone: 'B'});
+      assertEqual(r4.conflicts.length, 1, '双方修改同字段应冲突');
+
+      const r5 = threeWayMerge(base, {...base, phone: 'X'}, {...base, age: 70});
+      assertEqual(r5.conflicts.length, 0, '修改不同字段无冲突');
+      assertEqual(r5.merged.phone, 'X', '本地修改保留');
+      assertEqual(r5.merged.age, 70, '远程修改保留');
+    });
+
+    suite('2. 提醒日期幂等性', () => {
+      const patient = { diseases: ['hypertension'], riskLevel: 'high' };
+      const visitDate = '2026-06-01';
+      const d1 = Reminders.getNextVisitDate(patient, 'high', visitDate);
+      const d2 = Reminders.getNextVisitDate(patient, 'high', visitDate);
+      assertEqual(d1, d2, '多次调用返回相同日期');
+      assertEqual(d1, Utils.addDays(visitDate, 7), '高风险=就诊日+7天');
+    });
+
+    suite('3. 同步队列去重', async () => {
+      const db = await DB.open();
+      // Clear stores
+      const tx1 = db.transaction('sync_queue', 'readwrite');
+      tx1.objectStore('sync_queue').clear();
+      const tx2 = db.transaction('patients', 'readwrite');
+      tx2.objectStore('patients').clear();
+
+      const patient = { id: 'test-p1', name: '测试', age: 50, diseases: [], riskLevel: 'none', syncStatus: 'pending' };
+      await DB.addToSyncQueue('patients', 'test-p1', 'create', patient);
+      await DB.addToSyncQueue('patients', 'test-p1', 'update', patient);
+      await DB.addToSyncQueue('patients', 'test-p1', 'update', patient);
+
+      const queue = await DB.getSyncQueue();
+      const forP1 = queue.filter(q => q.entityId === 'test-p1');
+      assertEqual(forP1.length, 1, '同一实体去重为1条');
+    });
+
+    suite('4. 附件压缩状态追踪', () => {
+      const att = Attachments.createFromBase64('data:image/jpeg;base64,abc123', 'test.jpg');
+      assertEqual(att.compressionState, 'original', '初始状态为 original');
+      assertEqual(att.uploadStatus, 'pending', '上传状态为 pending');
+      assert(att.checksum !== undefined, '应有校验和');
+      assert(Attachments.verifyIntegrity(att), '完整性验证通过');
+    });
+
+    suite('5. 差异比对（三方）', () => {
+      const base = { a: 1, b: 2, c: 3 };
+      const local = { a: 1, b: 20, c: 3 };
+      const remote = { a: 10, b: 2, c: 30 };
+      const diffs = SyncManager.diffObjectsThreeWay(base, local, remote);
+      const bDiff = diffs.find(d => d.field === 'b');
+      assert(bDiff !== undefined, 'b 字段有差异');
+      assert(bDiff.localChanged && !bDiff.remoteChanged, 'b 仅本地修改');
+      const aDiff = diffs.find(d => d.field === 'a');
+      assert(!aDiff.localChanged && aDiff.remoteChanged, 'a 仅远程修改');
+    });
+
+    // Render results
+    function render() {
+      const output = document.getElementById('output');
+      output.className = '';
+      let html = '';
+
+      for (const s of _results.suites) {
+        html += `<div class="suite"><div class="suite-title">${s.name}</div>`;
+        for (const t of s.tests) {
+          html += `<div class="test-line ${t.pass ? 'pass' : 'fail'}">
+            <span class="icon">${t.pass ? '✓' : '✗'}</span>
+            <span>${t.message}</span>
+          </div>`;
+        }
+        html += '</div>';
+      }
+      output.innerHTML = html;
+
+      const summary = document.getElementById('summary');
+      const allPass = _results.fail === 0;
+      summary.className = `summary ${allPass ? 'all-pass' : 'has-fail'}`;
+      summary.textContent = `测试结果: ${_results.pass}/${_results.total} 通过, ${_results.fail} 失败`;
+    }
+
+    // Wait for async suites then render
+    setTimeout(render, 1000);
+  </script>
+</body>
+</html>
