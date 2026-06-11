@@ -127,7 +127,10 @@ class MockObjectStore {
     this.data = new Map();
     this.indexes = {};
   }
-  get(key) { return this.data.get(key) || null; }
+  get(key) {
+    const val = this.data.get(key);
+    return val ? JSON.parse(JSON.stringify(val)) : null;
+  }
   put(record) {
     const key = record[this.keyPath];
     this.data.set(key, JSON.parse(JSON.stringify(record)));
@@ -252,15 +255,18 @@ const DB = (() => {
       patient.syncStatus = 'pending';
       patient._rev = 1;
       patient._baseSnapshot = null;
+      patient._editLog = [{ rev: 1, action: 'create', ts: patient.updatedAt }];
     } else {
       patient._rev = (existing._rev || 0) + 1;
-      if (!patient._baseSnapshot && existing._baseSnapshot) {
-        patient._baseSnapshot = existing._baseSnapshot;
-      }
-      // 编辑已同步记录 → 重置为待同步
+      // 始终从 existing 获取 _baseSnapshot，不信任调用者传入的值
+      patient._baseSnapshot = existing._baseSnapshot || null;
       if (existing.syncStatus === 'synced') {
         patient.syncStatus = 'pending';
       }
+      // 追踪离线编辑日志
+      const log = Array.isArray(existing._editLog) ? [...existing._editLog] : [];
+      log.push({ rev: patient._rev, action: 'update', ts: patient.updatedAt });
+      patient._editLog = log;
     }
 
     if (patient.idCard && CryptoManager.isReady()) {
@@ -312,15 +318,18 @@ const DB = (() => {
       visit.syncVersion = 0;
       visit._rev = 1;
       visit._baseSnapshot = null;
+      visit._editLog = [{ rev: 1, action: 'create', ts: visit.updatedAt }];
     } else {
       visit._rev = (existing._rev || 0) + 1;
-      if (!visit._baseSnapshot && existing._baseSnapshot) {
-        visit._baseSnapshot = existing._baseSnapshot;
-      }
-      // 编辑已同步记录 → 重置为待同步
+      // 始终从 existing 获取 _baseSnapshot，不信任调用者传入的值
+      visit._baseSnapshot = existing._baseSnapshot || null;
       if (existing.syncStatus === 'synced') {
         visit.syncStatus = 'pending';
       }
+      // 追踪离线编辑日志
+      const log = Array.isArray(existing._editLog) ? [...existing._editLog] : [];
+      log.push({ rev: visit._rev, action: 'update', ts: visit.updatedAt });
+      visit._editLog = log;
     }
 
     if (visit.questionnaires && visit.questionnaires.length > 0) {
@@ -463,8 +472,23 @@ const DB = (() => {
 
   async function addToAttachmentQueue(attachment) {
     const db = await open();
+    const itemId = attachment.id || Utils.uuid();
+
+    // 幂等性检查：若已有相同 id 的附件且未上传完成，则更新而非重复添加
+    const existing = await get(db, 'attachment_queue', itemId);
+    if (existing) {
+      if (existing.status === 'uploaded') return existing;
+      if (existing.status === 'failed' && existing.retryCount >= 3) return existing;
+      existing.data = attachment.data || existing.data;
+      existing.thumbnail = attachment.thumbnail || existing.thumbnail;
+      existing.name = attachment.name || existing.name;
+      existing.compressionState = attachment.compressionState || existing.compressionState;
+      await put(db, 'attachment_queue', existing);
+      return existing;
+    }
+
     const item = {
-      id: attachment.id || Utils.uuid(),
+      id: itemId,
       visitId: attachment.visitId,
       attachmentId: attachment.id,
       data: attachment.data,
@@ -482,7 +506,11 @@ const DB = (() => {
   async function getAttachmentQueue() {
     const db = await open();
     const items = await getAll(db, 'attachment_queue');
-    return items.filter(i => i.status !== 'uploaded');
+    // 排除已上传和已达最大重试次数的失败项
+    return items.filter(i =>
+      i.status !== 'uploaded' &&
+      !(i.status === 'failed' && i.retryCount >= 3)
+    );
   }
 
   async function updateAttachmentQueueItem(id, updates) {
@@ -562,6 +590,33 @@ const DB = (() => {
     await clear(db, 'risk_config');
   }
 
+  async function reEncryptSyncQueue() {
+    if (!CryptoManager.isReady()) return;
+    const db = await open();
+    const items = await getAll(db, 'sync_queue');
+    for (const item of items) {
+      if (!item.payload) continue;
+      let plainPayload = item.payload;
+      if (plainPayload._encrypted) {
+        try {
+          const decrypted = await CryptoManager.decrypt(plainPayload._encrypted);
+          plainPayload = JSON.parse(decrypted);
+        } catch {
+          if (item.entityType && item.entityId) {
+            const current = await get(db, item.entityType, item.entityId);
+            if (current) plainPayload = current;
+            else continue;
+          } else { continue; }
+        }
+      }
+      try {
+        const encrypted = await CryptoManager.encrypt(JSON.stringify(plainPayload));
+        item.payload = { _encrypted: encrypted };
+        await put(db, 'sync_queue', item);
+      } catch { /* keep as is */ }
+    }
+  }
+
   return {
     open, get, put, deleteRecord, getAll, getByIndex, query, count, clear,
     savePatient, loadPatient, loadAllPatients,
@@ -575,7 +630,8 @@ const DB = (() => {
     getStorageStats, checkDuplicateVisit,
     updateBaseSnapshot, putResolved, _cleanSnapshot,
     savePlan, getAllPlans, getPlansByPatient, deletePlan,
-    saveRiskConfig, getRiskConfig, clearRiskConfig
+    saveRiskConfig, getRiskConfig, clearRiskConfig,
+    reEncryptSyncQueue
   };
 })();
 
@@ -1001,12 +1057,17 @@ async function runTests() {
     }
     const failedItems = await DB.getAttachmentQueue();
     const failedItem = failedItems.find(i => i.id === 'att-2');
-    assert(failedItem !== undefined, '6.6 失败项应仍在队列中');
-    assertEqual(failedItem.status, 'failed', '6.7 最终状态应为 failed');
-    assertEqual(failedItem.retryCount, 3, '6.8 重试次数应为 3');
+    assert(failedItem === undefined, '6.6 达最大重试的失败项不应出现在活跃队列');
+
+    // 直接从 store 验证失败项数据完整性
+    const db6 = await DB.open();
+    const storedFailed = await DB.get(db6, 'attachment_queue', 'att-2');
+    assert(storedFailed !== null, '6.7 失败项应仍存储在 DB 中');
+    assertEqual(storedFailed.status, 'failed', '6.8 最终状态应为 failed');
+    assertEqual(storedFailed.retryCount, 3, '6.9 重试次数应为 3');
 
     // 压缩状态一致性验证
-    assertEqual(failedItem.compressionState, 'compressed', '6.9 失败后压缩状态应保持不变');
+    assertEqual(storedFailed.compressionState, 'compressed', '6.10 失败后压缩状态应保持不变');
   });
 
   // ─────────────────────────────────────────────
@@ -1662,13 +1723,19 @@ async function runTests() {
     item = (await DB.getAttachmentQueue()).find(i => i.id === 'att-retry-1');
     assertEqual(item.retryCount, 2, '18.3 第二次失败后 retryCount=2');
 
-    // 模拟第三次失败 → 标记为 failed
+    // 模拟第三次失败 → 标记为 failed（达最大重试后从活跃队列排除）
     await DB.updateAttachmentQueueItem('att-retry-1', {
       status: 'failed', retryCount: 3, lastError: '超过最大重试次数'
     });
-    item = (await DB.getAttachmentQueue()).find(i => i.id === 'att-retry-1');
-    assertEqual(item.status, 'failed', '18.4 超过最大重试后状态为 failed');
-    assertEqual(item.retryCount, 3, '18.5 retryCount=3');
+    // 达最大重试后不应出现在活跃队列
+    const activeQueue = await DB.getAttachmentQueue();
+    const inActive = activeQueue.find(i => i.id === 'att-retry-1');
+    assert(inActive === undefined, '18.4 达最大重试后不应在活跃队列');
+    // 但应仍在 DB 中
+    const db18 = await DB.open();
+    const storedItem = await DB.get(db18, 'attachment_queue', 'att-retry-1');
+    assertEqual(storedItem.status, 'failed', '18.5 DB 中状态应为 failed');
+    assertEqual(storedItem.retryCount, 3, '18.5b retryCount=3');
 
     // 手动重试：重置状态
     await DB.updateAttachmentQueueItem('att-retry-1', {
@@ -1707,6 +1774,393 @@ async function runTests() {
     const beforeUpgrade = getNextVisitDate({ diseases: [], riskLevel: 'low' }, 'low', visitDate);
     const afterUpgrade = getNextVisitDate({ diseases: [], riskLevel: 'high' }, 'high', visitDate);
     assert(beforeUpgrade !== afterUpgrade, '19.6 风险升级后日期变化');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('20. 离线多次编辑操作日志 (_editLog)', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 创建患者
+    const patient = await DB.savePatient({
+      id: 'editlog-1', name: '日志测试', age: 50, diseases: [], riskLevel: 'low'
+    });
+    assert(Array.isArray(patient._editLog), '20.1 新建应有 _editLog');
+    assertEqual(patient._editLog.length, 1, '20.2 新建 _editLog 应有 1 条');
+    assertEqual(patient._editLog[0].action, 'create', '20.3 首条日志 action 应为 create');
+    assertEqual(patient._editLog[0].rev, 1, '20.4 首条日志 rev 应为 1');
+
+    // 第一次编辑
+    let loaded = await DB.loadPatient('editlog-1');
+    loaded.age = 51;
+    await DB.savePatient(loaded);
+    loaded = await DB.loadPatient('editlog-1');
+    assertEqual(loaded._editLog.length, 2, '20.5 第一次编辑后 _editLog 应有 2 条');
+    assertEqual(loaded._editLog[1].action, 'update', '20.6 第二条日志 action 应为 update');
+    assertEqual(loaded._editLog[1].rev, 2, '20.7 第二条日志 rev 应为 2');
+
+    // 第二次编辑
+    loaded.riskLevel = 'high';
+    await DB.savePatient(loaded);
+    loaded = await DB.loadPatient('editlog-1');
+    assertEqual(loaded._editLog.length, 3, '20.8 第二次编辑后 _editLog 应有 3 条');
+    assertEqual(loaded._editLog[2].rev, 3, '20.9 第三条日志 rev 应为 3');
+
+    // 第三次编辑
+    loaded.name = '日志测试修改';
+    await DB.savePatient(loaded);
+    loaded = await DB.loadPatient('editlog-1');
+    assertEqual(loaded._editLog.length, 4, '20.10 第三次编辑后 _editLog 应有 4 条');
+
+    // 验证日志完整性：所有 rev 应递增
+    const revs = loaded._editLog.map(e => e.rev);
+    const revsSorted = [...revs].sort((a, b) => a - b);
+    assertDeepEqual(revs, revsSorted, '20.11 rev 应单调递增');
+
+    // Visit 也应有编辑日志
+    mockDB.store('visits').clear();
+    mockDB.store('sync_queue').clear();
+    const visit = await DB.saveVisit({
+      id: 'vlog-1', patientId: 'editlog-1', date: '2026-06-01', riskLevel: 'low'
+    });
+    assertEqual(visit._editLog.length, 1, '20.12 Visit 新建应有 1 条日志');
+    visit.riskLevel = 'high';
+    const v2 = await DB.saveVisit(visit);
+    assertEqual(v2._editLog.length, 2, '20.13 Visit 编辑后应有 2 条日志');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('21. PIN 切换后同步队列重加密', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 用原始 PIN 创建患者（触发入队加密）
+    await DB.savePatient({
+      id: 'pin-test-1', name: 'PIN测试', age: 60, diseases: ['hypertension'], riskLevel: 'medium'
+    });
+
+    // 验证队列有加密 payload
+    let queue = await DB.getSyncQueue();
+    assertEqual(queue.length, 1, '21.1 队列应有 1 条');
+    assert(queue[0].payload._encrypted !== undefined, '21.2 payload 应已加密');
+    const oldEncrypted = queue[0].payload._encrypted;
+
+    // 模拟 PIN 切换：CryptoManager 更新为新 key
+    // （测试中 mock CryptoManager 的 encrypt/decrypt 是透明的，所以重加密后格式相同但验证流程正确）
+    await DB.reEncryptSyncQueue();
+
+    // 验证重加密后的队列
+    queue = await DB.getSyncQueue();
+    assertEqual(queue.length, 1, '21.3 重加密后队列仍为 1 条');
+    assert(queue[0].payload._encrypted !== undefined, '21.4 重加密后 payload 仍为加密格式');
+
+    // 验证解密后内容正确
+    const decrypted = await CryptoManager.decrypt(queue[0].payload._encrypted);
+    const parsed = JSON.parse(decrypted);
+    assertEqual(parsed.name, 'PIN测试', '21.5 重加密后解密内容正确');
+    assertEqual(parsed.id, 'pin-test-1', '21.6 重加密后 id 正确');
+
+    // 多条队列项也应全部重加密
+    await DB.savePatient({
+      id: 'pin-test-2', name: 'PIN测试2', age: 55, diseases: [], riskLevel: 'low'
+    });
+    await DB.reEncryptSyncQueue();
+    queue = await DB.getSyncQueue();
+    assertEqual(queue.length, 2, '21.7 多条队列重加密后数量不变');
+    for (const item of queue) {
+      assert(item.payload._encrypted !== undefined, `21.8 队列项 ${item.entityId} 应已加密`);
+    }
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('22. 附件队列幂等性（防重复入队 + 失败项排除）', async () => {
+    await DB.open();
+    mockDB.store('attachment_queue').clear();
+
+    const att = {
+      id: 'dedup-att-1', visitId: 'v1', name: 'photo.jpg',
+      data: 'data:image/jpeg;base64,test1', compressionState: 'compressed'
+    };
+
+    // 首次入队
+    const item1 = await DB.addToAttachmentQueue(att);
+    assertEqual(item1.status, 'pending', '22.1 首次入队状态为 pending');
+
+    // 重复入队同一 id：应更新而非新增
+    const att2 = { ...att, data: 'data:image/jpeg;base64,test2' };
+    const item2 = await DB.addToAttachmentQueue(att2);
+    assertEqual(item2.id, 'dedup-att-1', '22.2 重复入队应返回相同 id');
+    const queue = await DB.getAttachmentQueue();
+    const matching = queue.filter(i => i.id === 'dedup-att-1');
+    assertEqual(matching.length, 1, '22.3 队列中应只有 1 条该 id 的记录');
+
+    // 已上传的附件不应被重复入队
+    await DB.updateAttachmentQueueItem('dedup-att-1', { status: 'uploaded' });
+    const item3 = await DB.addToAttachmentQueue(att);
+    assertEqual(item3.status, 'uploaded', '22.4 已上传附件重复入队应返回原项');
+    const queueAfterUploaded = await DB.getAttachmentQueue();
+    const matchingAfter = queueAfterUploaded.filter(i => i.id === 'dedup-att-1');
+    assertEqual(matchingAfter.length, 0, '22.5 已上传附件不应出现在待处理队列');
+
+    // 失败且达最大重试的附件排除测试
+    mockDB.store('attachment_queue').clear();
+    const failAtt = {
+      id: 'fail-att-1', visitId: 'v1', name: 'fail.jpg',
+      data: 'data:image/jpeg;base64,fail', compressionState: 'compressed'
+    };
+    await DB.addToAttachmentQueue(failAtt);
+    await DB.updateAttachmentQueueItem('fail-att-1', {
+      status: 'failed', retryCount: 3, lastError: '超过最大重试'
+    });
+
+    // getAttachmentQueue 应排除达最大重试的 failed 项
+    const failedQueue = await DB.getAttachmentQueue();
+    const failedMatch = failedQueue.filter(i => i.id === 'fail-att-1');
+    assertEqual(failedMatch.length, 0, '22.6 达最大重试次数的 failed 项不应出现在队列');
+
+    // 重复入队已失败已达最大重试的附件应返回原项不创建新项
+    const item4 = await DB.addToAttachmentQueue(failAtt);
+    assertEqual(item4.status, 'failed', '22.7 达最大重试的失败项重入队应返回原项');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('23. 冲突合并后提醒重排验证', async () => {
+    // 模拟场景：患者风险等级从 low 变为 high 后提醒应缩短
+    const visitDate = '2026-06-01';
+
+    // 合并前：low risk → 30天间隔
+    const patientBefore = { id: 'resched-1', name: '重排测试', diseases: [], riskLevel: 'low' };
+    const dateBefore = getNextVisitDate(patientBefore, 'low', visitDate);
+    assertEqual(dateBefore, '2026-07-01', '23.1 合并前 low risk 提醒日 30 天后');
+
+    // 合并后：high risk → 7天间隔
+    const patientAfter = { ...patientBefore, riskLevel: 'high' };
+    const dateAfter = getNextVisitDate(patientAfter, 'high', visitDate);
+    assertEqual(dateAfter, '2026-06-08', '23.2 合并后 high risk 提醒日 7 天后');
+
+    // 验证提醒确实缩短了
+    assert(dateAfter < dateBefore, '23.3 风险升级后提醒日期应提前');
+
+    // 模拟新增疾病后重排
+    const patientWithDisease = { ...patientBefore, diseases: ['tuberculosis'], riskLevel: 'low' };
+    const dateWithDisease = getNextVisitDate(patientWithDisease, 'low', visitDate);
+    assertEqual(dateWithDisease, '2026-06-08', '23.4 新增肺结核后间隔应为 7 天');
+    assert(dateWithDisease < dateBefore, '23.5 新增疾病后提醒应提前');
+
+    // 模拟合并后血压数据变化导致新规则匹配
+    const mergedVisitData = {
+      id: 'v-resched-1', patientId: 'resched-1',
+      date: visitDate, bpSystolic: 190, bpDiastolic: 100,
+      riskLevel: 'high'
+    };
+    const abnormals = detectAbnormalIndicators(mergedVisitData);
+    assert(abnormals.length >= 1, '23.6 合并后异常指标应被检出');
+    const bpIndicator = abnormals.find(i => i.field === 'bpSystolic');
+    assert(bpIndicator !== undefined, '23.7 收缩压异常应被检出');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('24. 三层级合并保留本地补访链路', async () => {
+    // 场景：本地做了补访问卷 + 新增附件，远程更新了基础数据
+    // 合并后应保留本地的补访问卷和附件
+
+    const base = {
+      id: 'v-chain-1', patientId: 'p-chain-1', date: '2026-06-01',
+      bpSystolic: 140, bpDiastolic: 90, riskLevel: 'medium',
+      notes: '常规随访',
+      questionnaires: [
+        { templateId: 'ht_v1', version: 1, answers: { q1: 'A', q2: 'B' } }
+      ],
+      attachments: []
+    };
+
+    // 本地：补访问卷新增 + 新附件
+    const local = {
+      ...JSON.parse(JSON.stringify(base)),
+      notes: '补访：患者反映头晕',
+      questionnaires: [
+        { templateId: 'ht_v1', version: 1, answers: { q1: 'A', q2: 'C' } }, // 修改 q2
+        { templateId: 'revisit_v1', version: 1, answers: { r1: '头晕', r2: '持续3天' } } // 本地新增补访问卷
+      ],
+      attachments: [
+        { id: 'att-local-1', uploadStatus: 'pending', compressedSize: 200, name: '补访照片.jpg' }
+      ]
+    };
+
+    // 远程：更新了血压和基础问卷答案
+    const remote = {
+      ...JSON.parse(JSON.stringify(base)),
+      bpSystolic: 135, bpDiastolic: 85,
+      questionnaires: [
+        { templateId: 'ht_v1', version: 1, answers: { q1: 'D', q2: 'B' } } // 修改 q1
+      ],
+      attachments: [
+        { id: 'att-remote-1', uploadStatus: 'uploaded', compressedSize: 150, name: '检查报告.jpg' }
+      ]
+    };
+
+    const result = threeLevelMerge(base, local, remote, 'visits');
+
+    // 验证问卷层级合并
+    assertEqual(result.merged.questionnaires.length, 2, '24.1 合并后应有 2 个问卷（含补访）');
+    const baseQ = result.merged.questionnaires.find(q => q.templateId === 'ht_v1');
+    assert(baseQ !== undefined, '24.2 基础问卷应保留');
+    assertEqual(baseQ.answers.q1, 'D', '24.3 q1 取远程值（仅远程改）');
+    assertEqual(baseQ.answers.q2, 'C', '24.4 q2 取本地值（仅本地改）');
+
+    const revisitQ = result.merged.questionnaires.find(q => q.templateId === 'revisit_v1');
+    assert(revisitQ !== undefined, '24.5 本地补访问卷应被保留');
+    assertEqual(revisitQ.answers.r1, '头晕', '24.6 补访问卷答案应完整保留');
+
+    // 验证附件层级合并
+    assertEqual(result.merged.attachments.length, 2, '24.7 合并后应有 2 个附件');
+    const localAtt = result.merged.attachments.find(a => a.id === 'att-local-1');
+    assert(localAtt !== undefined, '24.8 本地补访附件应保留');
+    const remoteAtt = result.merged.attachments.find(a => a.id === 'att-remote-1');
+    assert(remoteAtt !== undefined, '24.9 远程附件应保留');
+    assertEqual(remoteAtt.uploadStatus, 'uploaded', '24.10 远程已上传附件状态应保留');
+
+    // 验证 notes 字段（仅本地修改 → 保留本地）
+    assertEqual(result.merged.notes, '补访：患者反映头晕', '24.11 本地补访 notes 应保留');
+
+    // 验证 bpSystolic（仅远程修改 → 保留远程）
+    assertEqual(result.merged.bpSystolic, 135, '24.12 远程血压更新应保留');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('25. _baseSnapshot 不信任调用者验证', async () => {
+    await DB.open();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+
+    // 创建患者并模拟同步成功
+    const patient = await DB.savePatient({
+      id: 'snap-1', name: '快照测试', age: 50, diseases: [], riskLevel: 'low'
+    });
+    await DB.updateBaseSnapshot('patients', 'snap-1', 1);
+    mockDB.store('sync_queue').clear();
+
+    // 加载后修改，并故意传入错误的 _baseSnapshot
+    let loaded = await DB.loadPatient('snap-1');
+    loaded.riskLevel = 'high';
+    loaded._baseSnapshot = { name: '篡改的快照', riskLevel: 'WRONG' }; // 恶意/错误值
+    await DB.savePatient(loaded);
+
+    // 验证 _baseSnapshot 应来自 existing 而非调用者
+    const db = await DB.open();
+    const stored = await DB.get(db, 'patients', 'snap-1');
+    assertEqual(stored._baseSnapshot.riskLevel, 'low', '25.1 _baseSnapshot 应来自 existing 而非调用者');
+    assertEqual(stored._baseSnapshot.name, '快照测试', '25.2 _baseSnapshot name 应为同步时的值');
+    assert(stored._baseSnapshot.riskLevel !== 'WRONG', '25.3 不应接受调用者传入的 _baseSnapshot');
+
+    // 验证 Visit 也有同样的保护
+    mockDB.store('visits').clear();
+    mockDB.store('sync_queue').clear();
+    const visit = await DB.saveVisit({
+      id: 'vsnap-1', patientId: 'snap-1', date: '2026-06-01', riskLevel: 'low'
+    });
+    await DB.updateBaseSnapshot('visits', 'vsnap-1', 1);
+    mockDB.store('sync_queue').clear();
+
+    let vLoaded = await DB.loadVisit('vsnap-1');
+    vLoaded.riskLevel = 'high';
+    vLoaded._baseSnapshot = { riskLevel: 'TAMPERED' };
+    await DB.saveVisit(vLoaded);
+
+    const vStored = await DB.get(db, 'visits', 'vsnap-1');
+    assertEqual(vStored._baseSnapshot.riskLevel, 'low', '25.4 Visit _baseSnapshot 应来自 existing');
+  });
+
+  // ─────────────────────────────────────────────
+  await asyncSuite('26. 审计数据导出验证', async () => {
+    await DB.open();
+    mockDB.store('followup_plans').clear();
+    mockDB.store('patients').clear();
+    mockDB.store('sync_queue').clear();
+    mockDB.store('risk_config').clear();
+
+    // 创建测试数据
+    await DB.savePatient({
+      id: 'audit-p1', name: '审计患者A', age: 65,
+      diseases: ['hypertension'], riskLevel: 'high'
+    });
+    await DB.savePatient({
+      id: 'audit-p2', name: '审计患者B', age: 55,
+      diseases: ['diabetes'], riskLevel: 'medium'
+    });
+
+    // 创建计划
+    await DB.savePlan({
+      id: 'audit-plan-1', patientId: 'audit-p1', patientName: '审计患者A',
+      planDate: '2026-06-08', dueDate: '2026-06-11', priority: 1,
+      status: 'pending', visitType: 'routine', matchedRuleId: 'r1',
+      missedCount: 0, revisitTrigger: { action: 'none' },
+      abnormalIndicators: [], requiredAttachments: [],
+      triggerReport: false, reportReason: null,
+      createdAt: Utils.now()
+    });
+    await DB.savePlan({
+      id: 'audit-plan-2', patientId: 'audit-p2', patientName: '审计患者B',
+      planDate: '2026-06-15', dueDate: '2026-06-18', priority: 2,
+      status: 'completed', completedAt: '2026-06-15T10:00:00Z',
+      visitType: 'routine', matchedRuleId: 'r2',
+      missedCount: 1, revisitTrigger: { action: 'questionnaire' },
+      abnormalIndicators: [], requiredAttachments: [],
+      triggerReport: false, reportReason: null,
+      createdAt: Utils.now()
+    });
+
+    // 模拟审计导出
+    const plans = await DB.getAllPlans();
+    const patients = await DB.loadAllPatients();
+
+    const auditData = {
+      exportDate: Utils.now(),
+      reportType: 'followup_plan_audit',
+      version: '1.0',
+      plans: plans.map(p => ({
+        id: p.id, patientId: p.patientId, patientName: p.patientName,
+        planDate: p.planDate, dueDate: p.dueDate, priority: p.priority,
+        status: p.status, missedCount: p.missedCount,
+        revisitTrigger: p.revisitTrigger, triggerReport: p.triggerReport,
+        completedAt: p.completedAt || null
+      })),
+      patientRiskProfile: patients.map(p => ({
+        id: p.id, name: p.name, riskLevel: p.riskLevel, diseases: p.diseases
+      }))
+    };
+
+    // 验证审计包结构
+    assertEqual(auditData.reportType, 'followup_plan_audit', '26.1 报告类型正确');
+    assertEqual(auditData.version, '1.0', '26.2 版本号正确');
+    assert(auditData.exportDate !== undefined, '26.3 应有导出时间');
+
+    // 验证计划数据完整性
+    assertEqual(auditData.plans.length, 2, '26.4 应有 2 个计划');
+    const plan1 = auditData.plans.find(p => p.id === 'audit-plan-1');
+    assert(plan1 !== undefined, '26.5 计划1应存在');
+    assertEqual(plan1.status, 'pending', '26.6 计划1状态正确');
+    assertEqual(plan1.priority, 1, '26.7 计划1优先级正确');
+    assertEqual(plan1.completedAt, null, '26.8 未完成计划 completedAt 应为 null');
+
+    const plan2 = auditData.plans.find(p => p.id === 'audit-plan-2');
+    assert(plan2.status, 'completed', '26.9 计划2状态正确');
+    assert(plan2.completedAt !== null, '26.10 已完成计划应有 completedAt');
+    assertEqual(plan2.missedCount, 1, '26.11 漏访次数正确');
+    assertEqual(plan2.revisitTrigger.action, 'questionnaire', '26.12 补访触发正确');
+
+    // 验证患者风险档案
+    assertEqual(auditData.patientRiskProfile.length, 2, '26.13 应有 2 个患者档案');
+    const profile1 = auditData.patientRiskProfile.find(p => p.id === 'audit-p1');
+    assertEqual(profile1.riskLevel, 'high', '26.14 患者A风险等级正确');
+    assertDeepEqual(profile1.diseases, ['hypertension'], '26.15 患者A疾病列表正确');
+
+    // 验证敏感数据未泄露（身份证不应出现在审计包）
+    const auditStr = JSON.stringify(auditData);
+    assert(!auditStr.includes('idCard'), '26.16 审计包不应包含身份证字段');
+    assert(!auditStr.includes('_encrypted'), '26.17 审计包不应包含加密字段');
   });
 
   // ─────────────────────────────────────────────

@@ -1,5 +1,5 @@
 // Service Worker - 医疗随访离线采集系统
-const CACHE_NAME = 'medical-followup-v2';
+const CACHE_NAME = 'medical-followup-v3';
 const STATIC_ASSETS = [
   '/index.html',
   '/app.js',
@@ -11,6 +11,7 @@ const STATIC_ASSETS = [
   '/lib/questionnaire-engine.js',
   '/lib/attachments.js',
   '/lib/reminders.js',
+  '/lib/followup-plan.js',
   '/data/questionnaire-templates.json',
   '/views/patient-list.js',
   '/views/questionnaire.js',
@@ -19,7 +20,9 @@ const STATIC_ASSETS = [
   '/views/sync-review.js',
   '/views/conflict.js',
   '/views/export.js',
-  '/views/questionnaire-config.js'
+  '/views/questionnaire-config.js',
+  '/views/followup-plan.js',
+  '/views/risk-config.js'
 ];
 
 // Install - cache all static assets
